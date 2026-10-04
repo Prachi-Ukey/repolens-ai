@@ -1,15 +1,11 @@
 from abc import ABC, abstractmethod
 import logging
 import re
+import time
 from typing import List, Dict, Any, Optional
-
 import httpx
-
 from app.config import settings
-
-
 logger = logging.getLogger("repolens.ai.llm")
-
 
 class LLMProvider(ABC):
 
@@ -20,7 +16,6 @@ class LLMProvider(ABC):
         user_prompt: str
     ) -> str:
         pass
-
 
 class MockLLM(LLMProvider):
     """
@@ -100,14 +95,16 @@ class OllamaLLM(LLMProvider):
 
             "stream": False,
 
+            "keep_alive": -1,
+
             "options": {
                 "temperature": 0.1,
 
-                # Smaller response reduces repetition
-                # and hallucination for the local model.
-                "num_predict": 256,
+                # Keep the response short to reduce
+                # unnecessary generation.
+                "num_predict": 150,
 
-                "num_ctx": 4096,
+                "num_ctx": 2048,
 
                 "top_p": 0.9
             }
@@ -125,14 +122,98 @@ class OllamaLLM(LLMProvider):
                 timeout=120.0
             ) as client:
 
+                # Measure prompt size
+                logger.info(
+                    "RAG prompt size: %d characters",
+                    len(system_prompt) + len(user_prompt)
+                )
+
+                # Measure complete HTTP request time
+                start_time = time.perf_counter()
+
                 response = client.post(
                     self.url,
                     json=payload
                 )
 
+                elapsed_time = (
+                    time.perf_counter() - start_time
+                )
+
+                logger.info(
+                    "Ollama HTTP request completed in %.2f seconds",
+                    elapsed_time
+                )
+
                 response.raise_for_status()
 
                 data = response.json()
+
+                # -------------------------------------------------
+                # Ollama internal timing information
+                # -------------------------------------------------
+
+                total_duration = data.get(
+                    "total_duration",
+                    0
+                )
+
+                load_duration = data.get(
+                    "load_duration",
+                    0
+                )
+
+                prompt_eval_duration = data.get(
+                    "prompt_eval_duration",
+                    0
+                )
+
+                eval_duration = data.get(
+                    "eval_duration",
+                    0
+                )
+
+                prompt_eval_count = data.get(
+                    "prompt_eval_count"
+                )
+
+                eval_count = data.get(
+                    "eval_count"
+                )
+
+                logger.info(
+                    "Ollama total duration: %.2f seconds",
+                    total_duration / 1_000_000_000
+                )
+
+                logger.info(
+                    "Ollama load duration: %.2f seconds",
+                    load_duration / 1_000_000_000
+                )
+
+                logger.info(
+                    "Ollama prompt eval duration: %.2f seconds",
+                    prompt_eval_duration / 1_000_000_000
+                )
+
+                logger.info(
+                    "Ollama prompt tokens: %s",
+                    prompt_eval_count
+                )
+
+                logger.info(
+                    "Ollama generation duration: %.2f seconds",
+                    eval_duration / 1_000_000_000
+                )
+
+                logger.info(
+                    "Ollama generated tokens: %s",
+                    eval_count
+                )
+
+                # -------------------------------------------------
+                # Extract response
+                # -------------------------------------------------
 
                 message = data.get(
                     "message",

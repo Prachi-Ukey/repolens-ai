@@ -16,61 +16,101 @@ class ChromaManager:
     Manages ChromaDB vector collections with repository isolation.
     """
 
-    def __init__(self, persist_dir: Optional[str] = None):
+    def __init__(
+        self,
+        persist_dir: Optional[str] = None
+    ):
         self.persist_dir = (
-            persist_dir or settings.CHROMA_PERSIST_DIRECTORY
+            persist_dir
+            or settings.CHROMA_PERSIST_DIRECTORY
         )
 
-        os.makedirs(self.persist_dir, exist_ok=True)
+        os.makedirs(
+            self.persist_dir,
+            exist_ok=True
+        )
 
         self.client = chromadb.PersistentClient(
             path=self.persist_dir
         )
 
-        self.embedding_provider = get_embedding_provider()
+        self.embedding_provider = (
+            get_embedding_provider()
+        )
 
-    def _get_collection_name(self, repository_id: str) -> str:
+    # ========================================================
+    # COLLECTION
+    # ========================================================
+
+    def _get_collection_name(
+        self,
+        repository_id: str
+    ) -> str:
         """
-        Converts repository ID into a valid Chroma collection name.
+        Converts repository ID into a valid Chroma
+        collection name.
         """
 
         # Chroma collection names must be 3-63 characters.
         # Replace hyphens with underscores.
-        sanitized_id = repository_id.replace("-", "_")
+        sanitized_id = repository_id.replace(
+            "-",
+            "_"
+        )
 
         return f"repo_{sanitized_id}"
 
-    def get_or_create_collection(self, repository_id: str):
+    def get_or_create_collection(
+        self,
+        repository_id: str
+    ):
         """
-        Gets an existing repository collection or creates it.
+        Gets an existing repository collection
+        or creates it.
         """
 
-        col_name = self._get_collection_name(repository_id)
+        col_name = self._get_collection_name(
+            repository_id
+        )
 
         return self.client.get_or_create_collection(
             name=col_name
         )
 
-    def delete_collection(self, repository_id: str):
+    def delete_collection(
+        self,
+        repository_id: str
+    ):
         """
         Deletes the Chroma collection for a repository.
         """
 
-        col_name = self._get_collection_name(repository_id)
+        col_name = self._get_collection_name(
+            repository_id
+        )
 
         try:
+
             self.client.delete_collection(
                 name=col_name
             )
 
             logger.info(
-                f"Deleted Chroma collection: {col_name}"
+                "Deleted Chroma collection: %s",
+                col_name
             )
 
         except Exception as e:
+
             logger.warning(
-                f"Could not delete collection {col_name}: {e}"
+                "Could not delete collection %s: %s",
+                col_name,
+                e
             )
+
+    # ========================================================
+    # UPSERT
+    # ========================================================
 
     def upsert_chunks(
         self,
@@ -78,7 +118,8 @@ class ChromaManager:
         chunks: List[Dict[str, Any]]
     ):
         """
-        Generates embeddings and stores repository chunks in ChromaDB.
+        Generates embeddings and stores repository
+        chunks in ChromaDB.
         """
 
         if not chunks:
@@ -97,10 +138,15 @@ class ChromaManager:
             {
                 "file_path": chunk["file_path"],
                 "language": chunk["language"],
-                "start_line": int(chunk["start_line"]),
-                "end_line": int(chunk["end_line"]),
+                "start_line": int(
+                    chunk["start_line"]
+                ),
+                "end_line": int(
+                    chunk["end_line"]
+                ),
                 "symbol_name": (
-                    chunk.get("symbol_name") or ""
+                    chunk.get("symbol_name")
+                    or ""
                 ),
                 "chunk_id": chunk["chunk_id"],
             }
@@ -112,14 +158,20 @@ class ChromaManager:
             for chunk in chunks
         ]
 
-        # Generate embeddings.
+        # -----------------------------------------------------
+        # Generate embeddings
+        # -----------------------------------------------------
+
         embeddings = (
             self.embedding_provider.embed_documents(
                 documents
             )
         )
 
-        # Batch upsert in groups of 100.
+        # -----------------------------------------------------
+        # Batch upsert
+        # -----------------------------------------------------
+
         batch_size = 100
 
         for i in range(
@@ -127,8 +179,11 @@ class ChromaManager:
             len(chunks),
             batch_size
         ):
+
             collection.upsert(
-                ids=ids[i:i + batch_size],
+                ids=ids[
+                    i:i + batch_size
+                ],
                 embeddings=embeddings[
                     i:i + batch_size
                 ],
@@ -141,9 +196,16 @@ class ChromaManager:
             )
 
         logger.info(
-            f"Upserted {len(chunks)} chunks to collection "
-            f"'{self._get_collection_name(repository_id)}'"
+            "Upserted %s chunks to collection '%s'",
+            len(chunks),
+            self._get_collection_name(
+                repository_id
+            )
         )
+
+    # ========================================================
+    # QUERY
+    # ========================================================
 
     def query_similar_chunks(
         self,
@@ -160,8 +222,20 @@ class ChromaManager:
             repository_id
         )
 
-        if collection.count() == 0:
+        collection_count = collection.count()
+
+        if collection_count == 0:
+
+            logger.warning(
+                "Chroma collection is empty | repo=%s",
+                repository_id
+            )
+
             return []
+
+        # -----------------------------------------------------
+        # Generate query embedding
+        # -----------------------------------------------------
 
         query_embedding = (
             self.embedding_provider.embed_query(
@@ -169,11 +243,17 @@ class ChromaManager:
             )
         )
 
+        # -----------------------------------------------------
+        # Query ChromaDB
+        # -----------------------------------------------------
+
         results = collection.query(
-            query_embeddings=[query_embedding],
+            query_embeddings=[
+                query_embedding
+            ],
             n_results=min(
                 top_k,
-                collection.count()
+                collection_count
             ),
             include=[
                 "documents",
@@ -184,45 +264,149 @@ class ChromaManager:
 
         retrieved_chunks = []
 
-        if results and results.get("documents"):
-            docs = results["documents"][0]
-            metas = results["metadatas"][0]
+        if not results:
 
-            distances = results.get(
-                "distances",
-                [[]]
-            )[0]
+            return retrieved_chunks
 
-            for idx, (doc, meta) in enumerate(
-                zip(docs, metas)
-            ):
-                dist = (
-                    distances[idx]
-                    if idx < len(distances)
-                    else 1.0
+        documents = results.get(
+            "documents"
+        )
+
+        metadatas = results.get(
+            "metadatas"
+        )
+
+        distances = results.get(
+            "distances"
+        )
+
+        if not documents or not metadatas:
+
+            return retrieved_chunks
+
+        docs = documents[0]
+        metas = metadatas[0]
+
+        if distances:
+            distance_list = distances[0]
+        else:
+            distance_list = []
+
+        # =====================================================
+        # TEMPORARY VECTOR STORE DEBUG
+        # =====================================================
+
+        print(
+            "\n========== CHROMA QUERY DEBUG =========="
+        )
+
+        print(
+            f"Collection: "
+            f"{self._get_collection_name(repository_id)}"
+        )
+
+        print(
+            f"Collection count: {collection_count}"
+        )
+
+        print(
+            f"Query: {query_text}"
+        )
+
+        print(
+            f"Returned chunks: {len(docs)}"
+        )
+
+        print(
+            "----------------------------------------"
+        )
+
+        for idx, meta in enumerate(
+            metas,
+            start=1
+        ):
+
+            distance = (
+                distance_list[idx - 1]
+                if idx - 1 < len(
+                    distance_list
                 )
+                else None
+            )
 
-                retrieved_chunks.append(
-                    {
-                        "file_path": meta["file_path"],
-                        "language": meta["language"],
-                        "start_line": meta["start_line"],
-                        "end_line": meta["end_line"],
-                        "symbol_name": (
-                            meta.get("symbol_name")
-                            or None
-                        ),
-                        "content": doc,
-                        "chunk_id": meta.get(
-                            "chunk_id",
-                            ""
-                        ),
-                        "distance": dist,
-                    }
+            print(
+                f"{idx}. "
+                f"FILE: {meta.get('file_path')} | "
+                f"LINES: "
+                f"{meta.get('start_line')}-"
+                f"{meta.get('end_line')} | "
+                f"DISTANCE: {distance} | "
+                f"SYMBOL: "
+                f"{meta.get('symbol_name')}"
+            )
+
+        print(
+            "========================================\n"
+        )
+
+        # =====================================================
+        # Build retrieved chunks
+        # =====================================================
+
+        for idx, (doc, meta) in enumerate(
+            zip(
+                docs,
+                metas
+            )
+        ):
+
+            dist = (
+                distance_list[idx]
+                if idx < len(
+                    distance_list
                 )
+                else 1.0
+            )
+
+            retrieved_chunks.append(
+                {
+                    "file_path": meta.get(
+                        "file_path",
+                        ""
+                    ),
+                    "language": meta.get(
+                        "language",
+                        ""
+                    ),
+                    "start_line": meta.get(
+                        "start_line",
+                        1
+                    ),
+                    "end_line": meta.get(
+                        "end_line",
+                        1
+                    ),
+                    "symbol_name": (
+                        meta.get(
+                            "symbol_name"
+                        )
+                        or None
+                    ),
+                    "content": doc,
+                    "chunk_id": meta.get(
+                        "chunk_id",
+                        ""
+                    ),
+                    "distance": dist,
+                }
+            )
 
         return retrieved_chunks
 
+
+# ============================================================
+# SINGLETON VECTOR STORE
+# ============================================================
 
 _vector_store_instance = None
 
@@ -235,6 +419,9 @@ def get_vector_store() -> ChromaManager:
     global _vector_store_instance
 
     if _vector_store_instance is None:
-        _vector_store_instance = ChromaManager()
+
+        _vector_store_instance = (
+            ChromaManager()
+        )
 
     return _vector_store_instance

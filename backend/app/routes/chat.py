@@ -9,15 +9,20 @@ from app.models.user import User
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.file import RepositoryFile
+
 from app.schemas.chat import (
     QuestionRequest,
     QuestionResponse,
     ConversationResponse,
     MessageResponse,
 )
+
 from app.services.auth_service import get_current_user
 from app.services.repo_service import get_repository_by_id
+
 from app.ai.rag import RAGEngine
+from app.ai.vector_store import get_vector_store
+from app.ai.llm import get_llm_provider
 
 
 router = APIRouter(
@@ -25,16 +30,32 @@ router = APIRouter(
     tags=["Chat & RAG"]
 )
 
-rag_engine = RAGEngine()
+
+# ============================================================
+# RAG ENGINE
+# ============================================================
+
+rag_engine = RAGEngine(
+    vector_store=get_vector_store(),
+    llm_provider=get_llm_provider()
+)
 
 
-@router.post("/chat", response_model=QuestionResponse)
+# ============================================================
+# ASK QUESTION
+# ============================================================
+
+@router.post(
+    "/chat",
+    response_model=QuestionResponse
+)
 def ask_question(
     repo_id: str,
     request: QuestionRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+
     repo = get_repository_by_id(
         db,
         repo_id,
@@ -42,6 +63,7 @@ def ask_question(
     )
 
     if not repo:
+
         raise HTTPException(
             status_code=404,
             detail="Repository not found."
@@ -53,12 +75,17 @@ def ask_question(
 
     if request.conversation_id:
 
-        conversation = db.query(Conversation).filter(
-            Conversation.id == request.conversation_id,
-            Conversation.repository_id == repo_id
-        ).first()
+        conversation = (
+            db.query(Conversation)
+            .filter(
+                Conversation.id == request.conversation_id,
+                Conversation.repository_id == repo_id
+            )
+            .first()
+        )
 
         if not conversation:
+
             raise HTTPException(
                 status_code=404,
                 detail="Conversation not found."
@@ -78,6 +105,7 @@ def ask_question(
         )
 
         db.add(conversation)
+
         db.flush()
 
     # ---------------------------------------------------------
@@ -95,27 +123,37 @@ def ask_question(
     # ---------------------------------------------------------
     # Execute RAG
     #
-    # Always retrieve 20 candidate chunks.
-    # RAGEngine performs the final hybrid ranking.
+    # Retrieve up to 20 candidate chunks.
+    # RAGEngine performs the final relevance filtering.
     # ---------------------------------------------------------
 
-    answer, sources, grounded = rag_engine.ask_question(
-        repo_id,
-        request.question,
+    rag_result = rag_engine.ask_question(
+        repo_id=repo_id,
+        question=request.question,
         top_k=20
+    )
+
+    answer = rag_result.get(
+        "answer",
+        ""
+    )
+
+    sources = rag_result.get(
+        "sources",
+        []
+    )
+
+    grounded = rag_result.get(
+        "grounded",
+        False
     )
 
     # ---------------------------------------------------------
     # Save sources
     # ---------------------------------------------------------
 
-    sources_dict_list = [
-        source.model_dump()
-        for source in sources
-    ]
-
     sources_json = json.dumps(
-        sources_dict_list
+        sources
     )
 
     # ---------------------------------------------------------
@@ -130,6 +168,7 @@ def ask_question(
     )
 
     db.add(assistant_msg)
+
     db.commit()
 
     # ---------------------------------------------------------
@@ -144,6 +183,10 @@ def ask_question(
         grounded=grounded
     )
 
+
+# ============================================================
+# GET CONVERSATIONS
+# ============================================================
 
 @router.get(
     "/conversations",
@@ -162,6 +205,7 @@ def get_conversations(
     )
 
     if not repo:
+
         raise HTTPException(
             status_code=404,
             detail="Repository not found."
@@ -202,15 +246,23 @@ def get_conversations(
             created_at=conv.created_at,
             updated_at=conv.updated_at,
             messages=[
-                MessageResponse.model_validate(message)
+                MessageResponse.model_validate(
+                    message
+                )
                 for message in msgs
             ]
         )
 
-        result.append(conv_resp)
+        result.append(
+            conv_resp
+        )
 
     return result
 
+
+# ============================================================
+# SEARCH REPOSITORY
+# ============================================================
 
 @router.post("/search")
 def search_repository(
@@ -237,12 +289,14 @@ def search_repository(
     )
 
     if not repo:
+
         raise HTTPException(
             status_code=404,
             detail="Repository not found."
         )
 
     if not query:
+
         return {
             "results": []
         }
@@ -275,17 +329,19 @@ def search_repository(
 
         for file in files:
 
-            results.append({
-                "file_path": file.file_path,
-                "file_id": file.id,
-                "language": file.language,
-                "match_type": "keyword",
-                "snippet": (
-                    file.content[:200]
-                    if file.content
-                    else ""
-                )
-            })
+            results.append(
+                {
+                    "file_path": file.file_path,
+                    "file_id": file.id,
+                    "language": file.language,
+                    "match_type": "keyword",
+                    "snippet": (
+                        file.content[:200]
+                        if file.content
+                        else ""
+                    )
+                }
+            )
 
     # ---------------------------------------------------------
     # Semantic search
@@ -304,14 +360,16 @@ def search_repository(
 
         for chunk in chunks:
 
-            results.append({
-                "file_path": chunk["file_path"],
-                "start_line": chunk["start_line"],
-                "end_line": chunk["end_line"],
-                "symbol_name": chunk["symbol_name"],
-                "match_type": "semantic",
-                "snippet": chunk["content"]
-            })
+            results.append(
+                {
+                    "file_path": chunk["file_path"],
+                    "start_line": chunk["start_line"],
+                    "end_line": chunk["end_line"],
+                    "symbol_name": chunk["symbol_name"],
+                    "match_type": "semantic",
+                    "snippet": chunk["content"]
+                }
+            )
 
     return {
         "query": query,
