@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=sqlite:///./repolens.db
+      - CHROMA_PERSIST_DIRECTORY=./chroma_data
+      - LLM_PROVIDER=mock
+      - EMBEDDING_PROVIDER=mock
+    volumes:
+      - backend_data:/app/chroma_data
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend_data:

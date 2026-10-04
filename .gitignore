@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Data
+.venv/
+venv/
+env/
+ENV/
+*.db
+*.sqlite3
+chroma_data/
+.env
+.env.local
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Python cache / test files
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local AI / model files
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# OS
+Thumbs.db
