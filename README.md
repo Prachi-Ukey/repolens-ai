@@ -4,6 +4,17 @@ RepoLens AI is an AI-powered platform that helps developers understand public Gi
 
 Instead of manually searching through hundreds of files, developers can ask questions about a codebase and use the retrieved evidence to understand its purpose, implementation, and execution flow.
 
+## 📸 Application Screenshots
+
+### Dashboard
+![RepoLens AI Dashboard](screenshots/dashboardpage.png)
+
+### Repository Analysis
+![Repository Analysis](screenshots/repository-analysis.png)
+
+### AI Chat with Code References
+![AI Chat Response](screenshots/ai-chat.png)
+
 ## Key Features
 
 - **GitHub Repository Analysis** — Analyze public GitHub repositories to explore their source code and documentation.
