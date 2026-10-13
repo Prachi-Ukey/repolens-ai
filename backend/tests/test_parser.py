@@ -22,7 +22,14 @@ def test_file_filtering_and_language():
     assert is_ignored_path("node_modules/express/index.js") is True
     assert is_ignored_path(".git/config") is True
     assert is_ignored_path(".env") is True
+    assert is_ignored_path("package-lock.json") is True
+    assert is_ignored_path("yarn.lock") is True
+    assert is_ignored_path("poetry.lock") is True
+    assert is_ignored_path("dist/bundle.min.js") is True
     assert is_ignored_path("src/components/App.jsx") is False
+    assert is_ignored_path("package.json") is False
+    assert is_ignored_path("requirements.txt") is False
+    assert is_ignored_path("README.md") is False
 
     assert detect_language("app/main.py") == "python"
     assert detect_language("src/index.ts") == "typescript"

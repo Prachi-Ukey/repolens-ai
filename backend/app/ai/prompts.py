@@ -149,10 +149,10 @@ def format_rag_user_prompt(
 
         lines = content.splitlines()
 
-        if len(lines) > 60:
+        if len(lines) > 140:
             content = (
-                "\n".join(lines[:60])
-                + f"\n... [truncated {len(lines) - 60} lines]"
+                "\n".join(lines[:140])
+                + f"\n... [truncated {len(lines) - 140} lines]"
             )
 
         chunk_str = (
@@ -200,17 +200,11 @@ code containing:
 
 is direct detection evidence.
 
-Code that only:
-
-- trains the YOLO model
-- calculates repair prices
-- predicts insurance coverage
-- describes the project in README
-
-is NOT the primary answer when runtime detection code is available.
+Code that only trains models (e.g. offline training scripts) or
+describes the project in README is NOT the primary answer when
+actual runtime execution pipeline code is available.
 
 If direct implementation evidence exists, explain THAT code.
-
 Do not answer using a related operation merely because it appears
 in another evidence chunk.
 

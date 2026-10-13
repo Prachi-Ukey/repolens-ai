@@ -149,6 +149,9 @@ class ChromaManager:
                     or ""
                 ),
                 "chunk_id": chunk["chunk_id"],
+                "defined_symbols": chunk.get("defined_symbols", ""),
+                "called_symbols": chunk.get("called_symbols", ""),
+                "imported_symbols": chunk.get("imported_symbols", ""),
             }
             for chunk in chunks
         ]
@@ -397,6 +400,9 @@ class ChromaManager:
                         "chunk_id",
                         ""
                     ),
+                    "defined_symbols": meta.get("defined_symbols", ""),
+                    "called_symbols": meta.get("called_symbols", ""),
+                    "imported_symbols": meta.get("imported_symbols", ""),
                     "distance": dist,
                 }
             )

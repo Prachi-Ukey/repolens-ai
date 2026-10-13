@@ -2,33 +2,145 @@ import os
 import re
 import hashlib
 from typing import List, Dict, Any, Tuple, Optional
+import ast
 import logging
 
 logger = logging.getLogger("repolens.github.parser")
 
-# Directories to ignore completely
+
+# ============================================================
+# DIRECTORIES TO IGNORE COMPLETELY
+# ============================================================
+
 IGNORE_DIRS = {
-    ".git", "node_modules", "pycache", "__pycache__", "dist", "build", ".venv",
-    "venv", "env", "target", "vendor", ".idea", ".vscode", "coverage", ".next",
-    ".nuxt", ".output", "bin", "obj", "out", ".cargo", ".gradle"
+    ".git",
+    "node_modules",
+    "pycache",
+    "__pycache__",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "env",
+    "target",
+    "vendor",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".output",
+    "bin",
+    "obj",
+    "out",
+    ".cargo",
+    ".gradle",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".turbo",
+    ".parcel-cache",
+    ".serverless",
+    ".terraform",
 }
 
-# File extensions to ignore
+
+# ============================================================
+# DEPENDENCY LOCKFILES TO IGNORE COMPLETELY
+# ============================================================
+
+LOCK_FILES = {
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "cargo.lock",
+    "gemfile.lock",
+    "composer.lock",
+    "poetry.lock",
+    "pipfile.lock",
+    "packages.lock.json",
+    "bun.lockb",
+    "flake.lock",
+}
+
+
+# ============================================================
+# FILE EXTENSIONS TO IGNORE
+# ============================================================
+
 IGNORE_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".pdf", ".zip",
-    ".tar", ".gz", ".7z", ".rar", ".exe", ".dll", ".so", ".dylib", ".bin",
-    ".iso", ".mp3", ".mp4", ".wav", ".avi", ".mov", ".pyc", ".pyo", ".pyd",
-    ".class", ".o", ".obj", ".db", ".sqlite", ".sqlite3", ".log", ".DS_Store",
-    ".lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock"
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".webp",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".7z",
+    ".rar",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".bin",
+    ".iso",
+    ".mp3",
+    ".mp4",
+    ".wav",
+    ".avi",
+    ".mov",
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    ".class",
+    ".o",
+    ".obj",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".log",
+    ".ds_store",
+    ".lock",
+    ".lockb",
+    ".map",
+    ".pkl",
+    ".pickle",
+    ".joblib",
+    ".pt",
+    ".pth",
+    ".onnx",
+    ".h5",
+    ".hdf5",
+    ".weights",
 }
 
-# Ignore secret files
+
+# ============================================================
+# FILES TO IGNORE
+# ============================================================
+
 IGNORE_FILES = {
-    ".env", ".env.local", ".env.development", ".env.production", "id_rsa",
-    "id_rsa.pub", "credentials.json", "service-account.json"
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    "id_rsa",
+    "id_rsa.pub",
+    "credentials.json",
+    "service-account.json",
 }
 
-# File extension to language mapping
+
+# ============================================================
+# LANGUAGE DETECTION
+# ============================================================
+
 EXTENSION_LANGUAGE_MAP = {
     ".py": "python",
     ".js": "javascript",
@@ -54,147 +166,1052 @@ EXTENSION_LANGUAGE_MAP = {
     ".yml": "yaml",
     ".md": "markdown",
     ".sh": "bash",
-    ".dockerfile": "dockerfile"
+    ".dockerfile": "dockerfile",
 }
 
+
+# ============================================================
+# PATH FILTERING
+# ============================================================
+
 def is_ignored_path(relative_path: str) -> bool:
-    parts = relative_path.replace("\\", "/").split("/")
-    # Check directory names
+    normalized = relative_path.replace("\\", "/").strip("/")
+    parts = normalized.split("/")
+
     for part in parts[:-1]:
-        if part in IGNORE_DIRS or part.startswith("."):
+        part_lower = part.lower()
+        if part_lower in IGNORE_DIRS or part.startswith("."):
             return True
-    
-    filename = parts[-1]
+
+    filename = parts[-1].lower()
+
     if filename in IGNORE_FILES:
         return True
 
+    if filename in LOCK_FILES:
+        return True
+
+    if filename.endswith(".lock") or filename.endswith(".lockb"):
+        return True
+
+    # Minified / generated bundle files / maps
+    if (
+        filename.endswith(".min.js")
+        or filename.endswith(".min.css")
+        or filename.endswith(".map")
+        or filename.endswith(".bundle.js")
+        or filename.endswith(".chunk.js")
+    ):
+        return True
+
     ext = os.path.splitext(filename)[1].lower()
+
     if ext in IGNORE_EXTENSIONS:
         return True
 
     return False
 
+
+# ============================================================
+# LANGUAGE DETECTION
+# ============================================================
+
 def detect_language(file_path: str) -> str:
     filename = os.path.basename(file_path).lower()
+
     if filename == "dockerfile":
         return "dockerfile"
+
     ext = os.path.splitext(filename)[1].lower()
+
     return EXTENSION_LANGUAGE_MAP.get(ext, "text")
 
-def compute_sha256(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8", errors="ignore")).hexdigest()
 
-def extract_symbol_name(line: str, language: str) -> Optional[str]:
+# ============================================================
+# SHA-256
+# ============================================================
+
+def compute_sha256(content: str) -> str:
+    return hashlib.sha256(
+        content.encode(
+            "utf-8",
+            errors="ignore",
+        )
+    ).hexdigest()
+
+
+# ============================================================
+# SYMBOL EXTRACTION FOR NON-PYTHON LANGUAGES
+# ============================================================
+
+def extract_symbol_name(
+    line: str,
+    language: str,
+) -> Optional[str]:
     """
-    Tries to extract class/function name from code lines using regex.
+    Try to extract a function/class name from a source line.
     """
+
     line_clean = line.strip()
-    if language in ["python"]:
-        match = re.match(r"^(?:async\s+)?def\s+([a-zA-Z0-9_]+)|class\s+([a-zA-Z0-9_]+)", line_clean)
+
+    # --------------------------------------------------------
+    # PYTHON
+    # --------------------------------------------------------
+
+    if language == "python":
+
+        match = re.match(
+            r"^(?:async\s+)?def\s+([a-zA-Z0-9_]+)|class\s+([a-zA-Z0-9_]+)",
+            line_clean,
+        )
+
         if match:
             return match.group(1) or match.group(2)
-    elif language in ["javascript", "typescript"]:
-        match = re.match(r"^(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)|(?:export\s+)?class\s+([a-zA-Z0-9_]+)|(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\(", line_clean)
+
+    # --------------------------------------------------------
+    # JAVASCRIPT / TYPESCRIPT
+    # --------------------------------------------------------
+
+    elif language in [
+        "javascript",
+        "typescript",
+    ]:
+
+        match = re.match(
+            r"^(?:export\s+)?"
+            r"(?:async\s+)?"
+            r"function\s+([a-zA-Z0-9_]+)"
+            r"|(?:export\s+)?class\s+([a-zA-Z0-9_]+)"
+            r"|(?:const|let|var)\s+([a-zA-Z0-9_]+)"
+            r"\s*=\s*(?:async\s*)?\(",
+            line_clean,
+        )
+
         if match:
-            return match.group(1) or match.group(2) or match.group(3)
-    elif language in ["java", "csharp", "cpp", "c"]:
-        match = re.match(r"^(?:public|private|protected|static|\s)*(?:class|interface|enum|void|int|string|boolean|auto)\s+([a-zA-Z0-9_]+)", line_clean)
+            return (
+                match.group(1)
+                or match.group(2)
+                or match.group(3)
+            )
+
+    # --------------------------------------------------------
+    # JAVA / C / C++ / C#
+    # --------------------------------------------------------
+
+    elif language in [
+        "java",
+        "csharp",
+        "cpp",
+        "c",
+    ]:
+
+        match = re.match(
+            r"^(?:public|private|protected|static|\s)*"
+            r"(?:class|interface|enum|void|int|string|boolean|auto)"
+            r"\s+([a-zA-Z0-9_]+)",
+            line_clean,
+        )
+
         if match:
             return match.group(1)
-    elif language in ["go"]:
-        match = re.match(r"^func\s+(?:\([^)]+\)\s+)?([a-zA-Z0-9_]+)|type\s+([a-zA-Z0-9_]+)\s+struct", line_clean)
+
+    # --------------------------------------------------------
+    # GO
+    # --------------------------------------------------------
+
+    elif language == "go":
+
+        match = re.match(
+            r"^func\s+(?:\([^)]*\)\s+)?([a-zA-Z0-9_]+)"
+            r"|type\s+([a-zA-Z0-9_]+)\s+struct",
+            line_clean,
+        )
+
         if match:
             return match.group(1) or match.group(2)
-    elif language in ["rust"]:
-        match = re.match(r"^(?:pub\s+)?fn\s+([a-zA-Z0-9_]+)|^(?:pub\s+)?struct\s+([a-zA-Z0-9_]+)", line_clean)
+
+    # --------------------------------------------------------
+    # RUST
+    # --------------------------------------------------------
+
+    elif language == "rust":
+
+        match = re.match(
+            r"^(?:pub\s+)?fn\s+([a-zA-Z0-9_]+)"
+            r"|^(?:pub\s+)?struct\s+([a-zA-Z0-9_]+)",
+            line_clean,
+        )
+
         if match:
             return match.group(1) or match.group(2)
 
     return None
+
+
+# ============================================================
+# PYTHON AST METADATA
+# ============================================================
+
+def extract_python_metadata(content: str):
+    """
+    Extract:
+
+    - defined symbols
+    - called symbols
+    - imported symbols
+
+    from Python source using AST.
+    """
+
+    defined = []
+    called = []
+    imported = []
+
+    try:
+
+        tree = ast.parse(content)
+
+        class Visitor(ast.NodeVisitor):
+
+            def visit_FunctionDef(self, node):
+
+                defined.append(
+                    (
+                        node.name,
+                        node.lineno,
+                    )
+                )
+
+                self.generic_visit(node)
+
+            def visit_AsyncFunctionDef(self, node):
+
+                defined.append(
+                    (
+                        node.name,
+                        node.lineno,
+                    )
+                )
+
+                self.generic_visit(node)
+
+            def visit_ClassDef(self, node):
+
+                defined.append(
+                    (
+                        node.name,
+                        node.lineno,
+                    )
+                )
+
+                self.generic_visit(node)
+
+            def visit_Call(self, node):
+
+                if isinstance(
+                    node.func,
+                    ast.Name,
+                ):
+
+                    called.append(
+                        (
+                            node.func.id,
+                            node.lineno,
+                        )
+                    )
+
+                elif isinstance(
+                    node.func,
+                    ast.Attribute,
+                ):
+
+                    called.append(
+                        (
+                            node.func.attr,
+                            node.lineno,
+                        )
+                    )
+
+                self.generic_visit(node)
+
+            def visit_Import(self, node):
+
+                for n in node.names:
+
+                    imported.append(
+                        (
+                            n.name,
+                            node.lineno,
+                        )
+                    )
+
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node):
+
+                for n in node.names:
+
+                    imported.append(
+                        (
+                            n.name,
+                            node.lineno,
+                        )
+                    )
+
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+
+    except Exception as e:
+
+        logger.warning(
+            "Python metadata extraction failed: %s",
+            e,
+        )
+
+    return (
+        defined,
+        called,
+        imported,
+    )
+
+
+# ============================================================
+# GET TOP-LEVEL PYTHON AST NODES
+# ============================================================
+
+def _get_python_top_level_nodes(
+    content: str,
+):
+    """
+    Return top-level Python functions/classes with
+    accurate source ranges.
+
+    Decorators are included in the function/class chunk.
+    """
+
+    try:
+
+        tree = ast.parse(content)
+
+        nodes = []
+
+        for node in tree.body:
+
+            if isinstance(
+                node,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                ),
+            ):
+
+                # ------------------------------------------------
+                # Include decorators in the semantic chunk.
+                # ------------------------------------------------
+
+                decorator_list = getattr(
+                    node,
+                    "decorator_list",
+                    [],
+                )
+
+                if decorator_list:
+
+                    start_line = min(
+                        getattr(
+                            decorator,
+                            "lineno",
+                            node.lineno,
+                        )
+                        for decorator in decorator_list
+                    )
+
+                else:
+
+                    start_line = getattr(
+                        node,
+                        "lineno",
+                        None,
+                    )
+
+                end_line = getattr(
+                    node,
+                    "end_lineno",
+                    None,
+                )
+
+                if (
+                    start_line is not None
+                    and end_line is not None
+                ):
+
+                    nodes.append(
+                        {
+                            "node": node,
+                            "start_line": start_line,
+                            "end_line": end_line,
+                            "symbol_name": getattr(
+                                node,
+                                "name",
+                                None,
+                            ),
+                            "chunk_type": (
+                                "class"
+                                if isinstance(
+                                    node,
+                                    ast.ClassDef,
+                                )
+                                else "function"
+                            ),
+                        }
+                    )
+
+        return nodes
+
+    except SyntaxError as e:
+
+        logger.warning(
+            "Python AST parsing failed during semantic chunking: %s",
+            e,
+        )
+
+        return []
+
+    except Exception as e:
+
+        logger.warning(
+            "Unexpected AST semantic chunking error: %s",
+            e,
+        )
+
+        return []
+
+
+# ============================================================
+# BUILD PYTHON SEMANTIC RANGES
+# ============================================================
+
+def _build_python_semantic_ranges(
+    content: str,
+    max_function_lines: int = 500,
+    fallback_chunk_lines: int = 50,
+):
+    """
+    Build semantic source ranges for Python code.
+
+    Normal top-level functions/classes become individual chunks.
+
+    Very large functions/classes are split into smaller sections.
+
+    Module-level code is grouped separately.
+    """
+
+    lines = content.splitlines()
+
+    total_lines = len(lines)
+
+    if total_lines == 0:
+        return []
+
+    nodes = _get_python_top_level_nodes(
+        content
+    )
+
+    ranges = []
+
+    semantic_nodes = []
+
+    # ========================================================
+    # FUNCTIONS / CLASSES
+    # ========================================================
+
+    for item in nodes:
+
+        start = item["start_line"]
+        end = item["end_line"]
+
+        semantic_nodes.append(item)
+
+        node_line_count = (
+            end - start + 1
+        )
+
+        # ----------------------------------------------------
+        # NORMAL FUNCTION / CLASS
+        # ----------------------------------------------------
+
+        if node_line_count <= max_function_lines:
+
+            ranges.append(
+                {
+                    "start_line": start,
+                    "end_line": end,
+                    "symbol_name": item[
+                        "symbol_name"
+                    ],
+                    "chunk_type": item[
+                        "chunk_type"
+                    ],
+                    "parent_symbol": None,
+                }
+            )
+
+        # ----------------------------------------------------
+        # VERY LARGE FUNCTION / CLASS
+        # ----------------------------------------------------
+
+        else:
+
+            current = start
+
+            while current <= end:
+
+                section_end = min(
+                    current
+                    + fallback_chunk_lines
+                    - 1,
+                    end,
+                )
+
+                ranges.append(
+                    {
+                        "start_line": current,
+                        "end_line": section_end,
+                        "symbol_name": item[
+                            "symbol_name"
+                        ],
+                        "chunk_type": (
+                            "function_section"
+                            if item[
+                                "chunk_type"
+                            ]
+                            == "function"
+                            else "class_section"
+                        ),
+                        "parent_symbol": item[
+                            "symbol_name"
+                        ],
+                    }
+                )
+
+                current = (
+                    section_end + 1
+                )
+
+    # ========================================================
+    # MODULE-LEVEL CODE
+    # ========================================================
+
+    occupied = []
+
+    for item in semantic_nodes:
+
+        occupied.append(
+            (
+                item["start_line"],
+                item["end_line"],
+            )
+        )
+
+    def is_inside_semantic_node(
+        line_number: int,
+    ) -> bool:
+
+        for start, end in occupied:
+
+            if (
+                start
+                <= line_number
+                <= end
+            ):
+                return True
+
+        return False
+
+    module_lines = []
+
+    for line_number in range(
+        1,
+        total_lines + 1,
+    ):
+
+        if not is_inside_semantic_node(
+            line_number
+        ):
+
+            module_lines.append(
+                line_number
+            )
+
+    # ========================================================
+    # GROUP CONTIGUOUS MODULE LINES
+    # ========================================================
+
+    if module_lines:
+
+        groups = []
+
+        current_group = [
+            module_lines[0]
+        ]
+
+        for line_number in module_lines[1:]:
+
+            if (
+                line_number
+                == current_group[-1] + 1
+            ):
+
+                current_group.append(
+                    line_number
+                )
+
+            else:
+
+                groups.append(
+                    current_group
+                )
+
+                current_group = [
+                    line_number
+                ]
+
+        groups.append(current_group)
+
+        # ----------------------------------------------------
+        # CREATE MODULE CHUNKS
+        # ----------------------------------------------------
+
+        for group in groups:
+
+            group_start = group[0]
+            group_end = group[-1]
+
+            group_content = "\n".join(
+                lines[
+                    group_start - 1 : group_end
+                ]
+            )
+
+            # Skip whitespace-only regions.
+            if not group_content.strip():
+                continue
+
+            # ------------------------------------------------
+            # SMALL MODULE REGION
+            # ------------------------------------------------
+
+            if (
+                len(group)
+                <= fallback_chunk_lines
+            ):
+
+                ranges.append(
+                    {
+                        "start_line": group_start,
+                        "end_line": group_end,
+                        "symbol_name": None,
+                        "chunk_type": "module",
+                        "parent_symbol": None,
+                    }
+                )
+
+            # ------------------------------------------------
+            # LARGE MODULE REGION
+            # ------------------------------------------------
+
+            else:
+
+                current = group_start
+
+                while current <= group_end:
+
+                    section_end = min(
+                        current
+                        + fallback_chunk_lines
+                        - 1,
+                        group_end,
+                    )
+
+                    section_content = "\n".join(
+                        lines[
+                            current - 1 : section_end
+                        ]
+                    )
+
+                    if section_content.strip():
+
+                        ranges.append(
+                            {
+                                "start_line": current,
+                                "end_line": section_end,
+                                "symbol_name": None,
+                                "chunk_type": "module",
+                                "parent_symbol": None,
+                            }
+                        )
+
+                    current = (
+                        section_end + 1
+                    )
+
+    # ========================================================
+    # SORT BY SOURCE POSITION
+    # ========================================================
+
+    ranges.sort(
+        key=lambda item: (
+            item["start_line"],
+            item["end_line"],
+        )
+    )
+
+    return ranges
+
+
+# ============================================================
+# PARSE FILE INTO CHUNKS
+# ============================================================
 
 def parse_file_into_chunks(
     file_path: str,
     content: str,
     language: str,
     target_lines_per_chunk: int = 50,
-    overlap_lines: int = 10
+    overlap_lines: int = 10,
 ) -> List[Dict[str, Any]]:
     """
-    Splits file content into code-aware chunks preserving line numbers and detected symbols.
+    Parse source code into chunks.
+
+    Python:
+        AST-aware semantic chunking.
+
+    Other languages:
+        Fixed-size sliding-window chunking.
     """
+
     lines = content.splitlines()
+
     total_lines = len(lines)
+
     if total_lines == 0:
         return []
 
     chunks = []
+
+    # ========================================================
+    # PYTHON
+    # ========================================================
+
+    if language == "python":
+
+        defined, called, imported = (
+            extract_python_metadata(content)
+        )
+
+        semantic_ranges = (
+            _build_python_semantic_ranges(
+                content,
+                max_function_lines=500,
+                fallback_chunk_lines=target_lines_per_chunk,
+            )
+        )
+
+        for semantic_range in semantic_ranges:
+
+            start_line = (
+                semantic_range["start_line"]
+            )
+
+            end_line = (
+                semantic_range["end_line"]
+            )
+
+            chunk_lines = lines[
+                start_line - 1 : end_line
+            ]
+
+            chunk_content = "\n".join(
+                chunk_lines
+            )
+
+            if not chunk_content.strip():
+                continue
+
+            sha = compute_sha256(
+                chunk_content
+            )
+
+            chunk_id = (
+                f"{file_path}:"
+                f"{start_line}-"
+                f"{end_line}:"
+                f"{sha[:8]}"
+            )
+
+            # ------------------------------------------------
+            # AST METADATA FOR THIS RANGE
+            # ------------------------------------------------
+
+            c_defined = sorted(
+                set(
+                    symbol
+                    for symbol, line_number
+                    in defined
+                    if (
+                        start_line
+                        <= line_number
+                        <= end_line
+                    )
+                )
+            )
+
+            c_called = sorted(
+                set(
+                    symbol
+                    for symbol, line_number
+                    in called
+                    if (
+                        start_line
+                        <= line_number
+                        <= end_line
+                    )
+                )
+            )
+
+            c_imported = sorted(
+                set(
+                    symbol
+                    for symbol, line_number
+                    in imported
+                    if (
+                        start_line
+                        <= line_number
+                        <= end_line
+                    )
+                )
+            )
+
+            chunks.append(
+                {
+                    "file_path": file_path,
+                    "language": language,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "symbol_name": semantic_range[
+                        "symbol_name"
+                    ],
+                    "chunk_type": semantic_range[
+                        "chunk_type"
+                    ],
+                    "parent_symbol": semantic_range[
+                        "parent_symbol"
+                    ],
+                    "chunk_id": chunk_id,
+                    "content": chunk_content,
+                    "sha_hash": sha,
+                    "defined_symbols": ",".join(
+                        c_defined
+                    ),
+                    "called_symbols": ",".join(
+                        c_called
+                    ),
+                    "imported_symbols": ",".join(
+                        c_imported
+                    ),
+                }
+            )
+
+        logger.info(
+            "AST semantic chunking: %s -> %d chunks",
+            file_path,
+            len(chunks),
+        )
+
+        return chunks
+
+    # ========================================================
+    # NON-PYTHON
+    # ========================================================
+
     i = 0
 
     while i < total_lines:
-        start_line = i + 1
-        end_line = min(i + target_lines_per_chunk, total_lines)
-        chunk_lines = lines[i:end_line]
-        chunk_content = "\n".join(chunk_lines)
 
-        # Look for symbol in the chunk lines
+        start_line = i + 1
+
+        end_line = min(
+            i + target_lines_per_chunk,
+            total_lines,
+        )
+
+        chunk_lines = lines[
+            i:end_line
+        ]
+
+        chunk_content = "\n".join(
+            chunk_lines
+        )
+
+        # ----------------------------------------------------
+        # Detect first symbol in the chunk.
+        # ----------------------------------------------------
+
         current_symbol = None
-        for l in chunk_lines:
-            sym = extract_symbol_name(l, language)
+
+        for line in chunk_lines:
+
+            sym = extract_symbol_name(
+                line,
+                language,
+            )
+
             if sym:
+
                 current_symbol = sym
+
                 break
 
-        sha = compute_sha256(chunk_content)
-        chunk_id = f"{file_path}:{start_line}-{end_line}:{sha[:8]}"
+        sha = compute_sha256(
+            chunk_content
+        )
 
-        chunks.append({
-            "file_path": file_path,
-            "language": language,
-            "start_line": start_line,
-            "end_line": end_line,
-            "symbol_name": current_symbol,
-            "chunk_id": chunk_id,
-            "content": chunk_content,
-            "sha_hash": sha
-        })
+        chunk_id = (
+            f"{file_path}:"
+            f"{start_line}-"
+            f"{end_line}:"
+            f"{sha[:8]}"
+        )
+
+        chunks.append(
+            {
+                "file_path": file_path,
+                "language": language,
+                "start_line": start_line,
+                "end_line": end_line,
+                "symbol_name": current_symbol,
+                "chunk_type": "fixed_window",
+                "parent_symbol": None,
+                "chunk_id": chunk_id,
+                "content": chunk_content,
+                "sha_hash": sha,
+                "defined_symbols": "",
+                "called_symbols": "",
+                "imported_symbols": "",
+            }
+        )
 
         if end_line == total_lines:
             break
-        i += (target_lines_per_chunk - overlap_lines)
+
+        i += (
+            target_lines_per_chunk
+            - overlap_lines
+        )
 
     return chunks
 
-def process_repository_files(repo_dir: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+
+# ============================================================
+# PROCESS REPOSITORY FILES
+# ============================================================
+
+def process_repository_files(
+    repo_dir: str,
+) -> Tuple[
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+]:
     """
-    Traverses repository directory, filters relevant code files, and parses them into files & chunks.
+    Traverse repository directory.
+
+    Returns:
+
+        discovered_files
+        all_chunks
     """
+
     discovered_files = []
+
     all_chunks = []
 
-    for root, dirs, files in os.walk(repo_dir):
-        # Modify dirs in-place to skip ignored directories
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+    for root, dirs, files in os.walk(
+        repo_dir
+    ):
+
+        # ----------------------------------------------------
+        # Remove ignored directories.
+        # ----------------------------------------------------
+
+        dirs[:] = [
+            d
+            for d in dirs
+            if (
+                d not in IGNORE_DIRS
+                and not d.startswith(".")
+            )
+        ]
 
         for filename in files:
-            full_path = os.path.join(root, filename)
-            rel_path = os.path.relpath(full_path, repo_dir).replace("\\", "/")
 
-            if is_ignored_path(rel_path):
+            full_path = os.path.join(
+                root,
+                filename,
+            )
+
+            rel_path = os.path.relpath(
+                full_path,
+                repo_dir,
+            ).replace("\\", "/")
+
+            # ------------------------------------------------
+            # Ignore unwanted files.
+            # ------------------------------------------------
+
+            if is_ignored_path(
+                rel_path
+            ):
                 continue
 
             try:
-                # Read file content safely
-                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+
+                with open(
+                    full_path,
+                    "r",
+                    encoding="utf-8",
+                    errors="ignore",
+                ) as f:
+
                     content = f.read()
 
-                # Skip empty or excessively huge generated files (> 2MB)
-                size_bytes = len(content.encode("utf-8"))
-                if size_bytes == 0 or size_bytes > 2 * 1024 * 1024:
+                size_bytes = len(
+                    content.encode("utf-8")
+                )
+
+                # ------------------------------------------------
+                # Ignore empty or extremely large files.
+                # ------------------------------------------------
+
+                if (
+                    size_bytes == 0
+                    or size_bytes
+                    > 2 * 1024 * 1024
+                ):
                     continue
 
-                line_count = len(content.splitlines())
-                language = detect_language(rel_path)
-                sha = compute_sha256(content)
+                line_count = len(
+                    content.splitlines()
+                )
+
+                language = detect_language(
+                    rel_path
+                )
+
+                sha = compute_sha256(
+                    content
+                )
 
                 file_info = {
                     "file_path": rel_path,
@@ -203,16 +1220,40 @@ def process_repository_files(repo_dir: str) -> Tuple[List[Dict[str, Any]], List[
                     "size_bytes": size_bytes,
                     "line_count": line_count,
                     "sha_hash": sha,
-                    "content": content
+                    "content": content,
                 }
-                discovered_files.append(file_info)
 
-                # Parse into chunks
-                file_chunks = parse_file_into_chunks(rel_path, content, language)
-                all_chunks.extend(file_chunks)
+                discovered_files.append(
+                    file_info
+                )
+
+                # ------------------------------------------------
+                # Create semantic/fixed chunks.
+                # ------------------------------------------------
+
+                file_chunks = (
+                    parse_file_into_chunks(
+                        rel_path,
+                        content,
+                        language,
+                    )
+                )
+
+                all_chunks.extend(
+                    file_chunks
+                )
 
             except Exception as e:
-                logger.warning(f"Skipping unreadable file '{rel_path}': {e}")
+
+                logger.warning(
+                    "Skipping unreadable file '%s': %s",
+                    rel_path,
+                    e,
+                )
+
                 continue
 
-    return discovered_files, all_chunks
+    return (
+        discovered_files,
+        all_chunks,
+    )

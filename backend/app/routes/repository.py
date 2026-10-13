@@ -102,6 +102,5 @@ def get_architecture(repo_id: str, db: Session = Depends(get_db), current_user: 
     repo = get_repository_by_id(db, repo_id, current_user.id)
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found.")
-    files = get_repository_files(db, repo_id)
-    graph = generate_architecture_graph(files)
+    graph = generate_architecture_graph(repo_id, db)
     return graph

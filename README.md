@@ -1,99 +1,119 @@
-# RepoLens AI – GitHub Repository Intelligence Platform
+# RepoLens AI — GitHub Repository Intelligence Platform
 
-RepoLens AI is an AI-powered platform that analyzes public GitHub repositories and allows developers to ask natural-language questions about their codebase. It uses Retrieval-Augmented Generation (RAG), local embeddings, ChromaDB, and an LLM to provide grounded answers with file and line-level code references.
+RepoLens AI is an AI-powered platform that helps developers understand public GitHub repositories by asking questions in natural language. It combines Retrieval-Augmented Generation (RAG), semantic search, code parsing, and a locally running language model to generate repository-grounded answers with file and line references.
 
----
+Instead of manually searching through hundreds of files, developers can ask questions about a codebase and use the retrieved evidence to understand its purpose, implementation, and execution flow.
 
 ## Key Features
 
-- **GitHub Repository Analysis**: Connect a public GitHub repository and analyze its source code automatically.
-- **AST-Aware Code Parsing**: Parses source files into meaningful code chunks while preserving file paths, symbols, and line numbers.
-- **RAG-Based Code Search**: Retrieves relevant code using semantic and keyword-based search with ChromaDB.
-- **AI-Powered Codebase Chat**: Ask natural-language questions about the repository and get answers grounded in the actual source code.
-- **Line-Level Code References**: AI responses include file paths and line ranges to help developers locate the relevant implementation.
-- **Repository-Isolated Data**: Each analyzed repository has its own vector collection to keep code search isolated.
-- **User Authentication**: Supports user registration and login with password hashing and JWT-based authentication.
-- **Developer-Friendly Interface**: Provides a workspace for repository analysis, AI chat, and code exploration.
+- **GitHub Repository Analysis** — Analyze public GitHub repositories to explore their source code and documentation.
+- **AST-Aware Code Parsing** — Organize supported source code into meaningful chunks while preserving file paths, symbols, and line numbers.
+- **RAG-Based Retrieval** — Retrieve relevant repository content using semantic and keyword-based search.
+- **AI-Powered Codebase Chat** — Ask natural-language questions about repository functionality, technologies, and implementation details.
+- **Evidence-Based Answers** — Display file references and line ranges to help developers verify responses against source code.
+- **Code Execution-Flow Analysis** — Use Abstract Syntax Tree (AST) analysis to investigate function relationships and call chains where supported.
+- **Repository Isolation** — Keep repository-specific retrieval data separate to reduce cross-repository information mixing.
+- **User Authentication** — Support registration and login with password hashing and JWT-based authentication.
+- **Local LLM Integration** — Run question answering through Ollama without requiring a hosted LLM API for the configured local model.
 
----
-
-## Tech Stack
+## Technology Stack
 
 ### Frontend
-
-- **Framework**: React + Vite
-- **Styling**: Tailwind CSS
-- **Routing**: React Router
-- **HTTP Client**: Axios
-- **Icons & UI**: Lucide React
+- React
+- Vite
+- Tailwind CSS
+- React Router
+- Axios
+- Lucide React
 
 ### Backend
+- Python
+- FastAPI
+- Uvicorn
+- SQLAlchemy
+- SQLite
+- JWT authentication
+- bcrypt
 
-- **Framework**: Python + FastAPI
-- **Server**: Uvicorn
-- **Database**: SQLite / SQLAlchemy
-- **Authentication**: JWT + bcrypt
+### AI and Code Intelligence
+- Retrieval-Augmented Generation (RAG)
+- Sentence Transformers — `all-MiniLM-L6-v2` embeddings
+- ChromaDB vector store
+- Ollama
+- Qwen2.5-Coder 1.5B
+- Python Abstract Syntax Trees (AST)
+- Semantic and keyword-based retrieval
 
-### AI & RAG
+### Development Tools
+- Git
+- GitHub
+- Docker
+- Docker Compose
 
-- **RAG**: Retrieval-Augmented Generation
-- **Embeddings**: Sentence Transformers (`all-MiniLM-L6-v2`)
-- **Vector Database**: ChromaDB
-- **LLM**: Ollama + Qwen2.5-Coder 7B
-- **Code Analysis**: AST-aware code parsing
+> Technology and deployment details should be retained here only if they are present in the current implementation.
 
-### Development & Deployment
+## How It Works
 
-- **Version Control**: Git + GitHub
-- **Containerization**: Docker + Docker Compose
+1. **Repository input:** The user provides a public GitHub repository.
+2. **Repository processing:** RepoLens retrieves and processes supported source files and documentation.
+3. **Code parsing:** Files are divided into meaningful chunks, preserving relevant file paths, symbols, and line numbers.
+4. **Embedding generation:** Text chunks are converted into vector embeddings.
+5. **Indexing:** Embeddings and associated metadata are stored in ChromaDB.
+6. **Question submission:** The user asks a question through the chat interface.
+7. **Hybrid retrieval:** RepoLens searches for relevant chunks using semantic and keyword-based matching.
+8. **Context construction:** Retrieved evidence is added to the prompt sent to the language model.
+9. **Answer generation:** Ollama generates an answer based on the available repository context.
+10. **Evidence display:** The response includes file paths and line ranges so users can inspect the supporting source.
 
----
-
-## How RAG Pipeline Works
+## RAG Pipeline
 
 ```text
-User Question
-      │
-      ▼
-Generate Question Embedding
-      │
-      ▼
-Search ChromaDB Vector Store
-      │
-      ▼
-Hybrid Retrieval
-(Semantic + Keyword Matching)
-      │
-      ▼
-Select Relevant Code Chunks
-(File Path + Symbol + Line Numbers)
-      │
-      ▼
-Build Grounded LLM Prompt
-      │
-      ▼
-Ollama + Qwen2.5-Coder 7B
-      │
-      ▼
-AI Answer with Source References
-[file_path:start_line-end_line]
+Public GitHub Repository
+          |
+          v
+  Fetch & Process Files
+          |
+          v
+  AST-Aware Code Parsing
+          |
+          v
+  Chunking + Metadata
+          |
+          v
+  Generate Embeddings
+          |
+          v
+  ChromaDB Vector Store
+          |
+          v
+     User Question
+          |
+          v
+  Hybrid Evidence Retrieval
+          |
+          v
+  Grounded Prompt Construction
+          |
+          v
+  Ollama + Qwen2.5-Coder 1.5B
+          |
+          v
+  Answer + File/Line References
 ```
 
-The pipeline retrieves relevant code from the analyzed repository and provides it as context to the LLM. The model is instructed to answer only from the retrieved repository evidence and include file and line-level references.
-
----
-
-## Installation & Local Execution
+## Getting Started
 
 ### Prerequisites
 
-Make sure the following are installed:
+Install the following tools:
 
-- Python 3.11+
-- Node.js 18+
+- Python 3.11 or a compatible version supported by the dependencies
+- Node.js and npm
 - Git
 - Ollama
-- GitHub account
+- Sufficient memory and disk space for the selected local language model
+
+Docker is optional if you intend to use the Docker Compose setup.
 
 ### 1. Clone the Repository
 
@@ -102,20 +122,36 @@ git clone https://github.com/Prachi-Ukey/repolens-ai.git
 cd repolens-ai
 ```
 
-### 2. Backend Setup
+### 2. Configure Ollama
+
+Make sure Ollama is installed and running. Pull the model used by the current backend configuration:
+
+```bash
+ollama pull qwen2.5-coder:1.5b
+```
+
+Verify that the model is available:
+
+```bash
+ollama list
+```
+
+### 3. Set Up the Backend
+
+Open a terminal in the project root:
 
 ```bash
 cd backend
 python -m venv venv
 ```
 
-**Windows:**
+On Windows PowerShell:
 
-```bash
-venv\Scripts\activate
+```powershell
+.\venv\Scripts\Activate.ps1
 ```
 
-**Linux/macOS:**
+On Linux or macOS:
 
 ```bash
 source venv/bin/activate
@@ -127,23 +163,27 @@ Install the dependencies:
 pip install -r requirements.txt
 ```
 
-Start the backend:
+Configure the environment variables in `backend/.env` using the project's expected configuration. For example, the current setup uses Ollama as its LLM provider:
 
-```bash
-python -m app.main
+```env
+LLM_PROVIDER=ollama
 ```
 
-Backend API:
+Do not replace existing required environment settings with this minimal example; preserve the configuration needed by your installation.
 
-`http://localhost:8000`
+Start the backend from the `backend` directory using the development command configured for the application:
 
-API documentation:
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
 
-`http://localhost:8000/docs`
+Backend API: http://localhost:8000
 
-### 3. Frontend Setup
+API documentation: http://localhost:8000/docs
 
-Open a new terminal:
+### 4. Set Up the Frontend
+
+Open a second terminal:
 
 ```bash
 cd frontend
@@ -151,60 +191,41 @@ npm install
 npm run dev
 ```
 
-Frontend:
+Open the local URL printed by Vite. The default development URL is usually:
 
-`http://localhost:5173`
+http://localhost:5173
 
-### 4. Start Ollama
+### 5. Use RepoLens AI
 
-Make sure Ollama is installed and running.
-
-Pull the required model:
-
-```bash
-ollama pull qwen2.5-coder:7b
-```
-
-RepoLens AI uses Qwen2.5-Coder 7B through Ollama for repository question answering.
-
----
-
-## Environment Variables
-
-Create or edit `backend/.env` according to your local configuration.
-
-Example:
-
-```env
-APP_ENV=development
-DEBUG=True
-SECRET_KEY=your-secret-key
-DATABASE_URL=sqlite:///./repolens.db
-
-LLM_PROVIDER=ollama
-EMBEDDING_PROVIDER=local
-CHROMA_PERSIST_DIRECTORY=./chroma_data
-```
-
-> **Security:** Never commit API keys, passwords, database credentials, or production secrets to GitHub.
-
----
+1. Open the frontend in your browser.
+2. Register or log in if authentication is enabled.
+3. Add or select a supported public GitHub repository.
+4. Wait for repository processing and indexing to complete.
+5. Ask a question about the codebase.
+6. Review the answer and inspect its supporting file and line references.
 
 ## Running with Docker Compose
 
+If the current Docker configuration supports the required services, build and start them from the project root:
+
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
-The application services are configured through `docker-compose.yml`.
+Stop the services with:
 
----
+```bash
+docker compose down
+```
+
+Refer to `docker-compose.yml` for service definitions, ports, and environment configuration. Ollama connectivity and model availability must also be configured appropriately for the container environment.
 
 ## Project Structure
 
+The following is a representative structure. Adjust it to match the actual repository before publishing.
+
 ```text
 repo-lens-ai/
-│
 ├── backend/
 │   ├── app/
 │   │   ├── ai/
@@ -212,37 +233,37 @@ repo-lens-ai/
 │   │   ├── routes/
 │   │   ├── models/
 │   │   └── utils/
+│   ├── tests/
 │   └── requirements.txt
-│
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
 │   │   ├── pages/
 │   │   └── services/
 │   └── package.json
-│
-├── docs/
 ├── docker-compose.yml
 ├── .gitignore
 └── README.md
 ```
 
----
+## Security and Privacy
 
-## Current AI Workflow
+- Never commit `.env` files, passwords, tokens, or other secrets.
+- Use a strong, unique secret key for local configuration.
+- Treat retrieved repository content as untrusted input.
+- Only analyze repositories you are authorized to access.
+- Keep authentication secrets and database files out of public commits.
 
-1. User provides a public GitHub repository URL.
-2. RepoLens AI validates and downloads the repository.
-3. Source files are parsed and divided into meaningful code chunks.
-4. Code chunks are converted into vector embeddings.
-5. Embeddings are stored in a repository-specific ChromaDB collection.
-6. The user asks a natural-language question.
-7. Relevant code chunks are retrieved using hybrid search.
-8. Retrieved code is provided to the LLM as evidence.
-9. The LLM generates a grounded response with file and line-level references.
+## Current Limitations
 
----
+- Answer quality depends on the relevance of retrieved evidence and the capabilities of the configured local language model.
+- AST-based analysis is limited by the language and code patterns supported by the parser.
+- Dynamic behavior, reflection, and external dependencies may not always be resolved accurately.
+- Citations should be checked against the referenced source code; an AI-generated answer is not a substitute for verification.
+- Local inference speed depends on the model, hardware, and available memory.
 
-## License
+## Future Improvements
 
-MIT License
+Potential improvements include broader language support, more precise retrieval evaluation, enhanced citation validation, and additional code-navigation capabilities.
+
+

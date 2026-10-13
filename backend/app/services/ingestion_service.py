@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+from typing import Any, Dict
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.repository import Repository
@@ -99,6 +100,8 @@ def run_ingestion_pipeline(job_id: str, repository_id: str):
         # Stage 6: Embedding & Vector Storage
         update_job_status(db, job, "embedding", 90, "Generating embeddings and indexing in ChromaDB...")
         vector_store = get_vector_store()
+        # Safe rebuild: Delete existing collection for this repo to purge stale/ignored chunks
+        vector_store.delete_collection(repo.id)
         vector_store.upsert_chunks(repo.id, chunks)
 
         # Generate overview summary
@@ -130,4 +133,96 @@ def run_ingestion_pipeline(job_id: str, repository_id: str):
     finally:
         if temp_dir:
             cleanup_repository_dir(temp_dir)
+        db.close()
+
+
+def reindex_existing_repository(repository_id: str) -> Dict[str, Any]:
+    """
+    Safely reindexes an existing repository using stored files.
+    Purges ignored files (e.g., dependency lockfiles, build artifacts) from DB,
+    re-chunks valid files, resets the Chroma collection for this repository only,
+    and upserts fresh chunks. Does NOT affect any other repository or user.
+    """
+    from app.github.parser import is_ignored_path, parse_file_into_chunks
+
+    db = SessionLocal()
+    try:
+        repo = db.query(Repository).filter(Repository.id == repository_id).first()
+        if not repo:
+            raise ValueError(f"Repository '{repository_id}' not found.")
+
+        files = db.query(RepositoryFile).filter(RepositoryFile.repository_id == repo.id).all()
+        if not files:
+            raise ValueError(f"No stored files found for repository '{repository_id}'.")
+
+        logger.info(f"Reindexing repository {repo.name} ({repo.id}) with {len(files)} stored files...")
+
+        # 1. Filter out ignored files (e.g. package-lock.json, build artifacts)
+        valid_files = []
+        ignored_file_ids = []
+        for f in files:
+            if is_ignored_path(f.file_path):
+                ignored_file_ids.append(f.id)
+                logger.info(f"Purging ignored file from index: {f.file_path}")
+            else:
+                valid_files.append(f)
+
+        if ignored_file_ids:
+            db.query(CodeChunk).filter(CodeChunk.file_id.in_(ignored_file_ids)).delete(synchronize_session=False)
+            db.query(RepositoryFile).filter(RepositoryFile.id.in_(ignored_file_ids)).delete(synchronize_session=False)
+            db.commit()
+
+        # 2. Clear existing code chunks for this repository
+        db.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).delete()
+        db.commit()
+
+        # 3. Re-chunk valid files
+        all_chunks = []
+        chunk_objs = []
+        for f in valid_files:
+            file_chunks = parse_file_into_chunks(
+                file_path=f.file_path,
+                content=f.content,
+                language=f.language
+            )
+            all_chunks.extend(file_chunks)
+            for c in file_chunks:
+                chunk_obj = CodeChunk(
+                    repository_id=repo.id,
+                    file_id=f.id,
+                    file_path=c["file_path"],
+                    language=c["language"],
+                    start_line=c["start_line"],
+                    end_line=c["end_line"],
+                    symbol_name=c["symbol_name"],
+                    chunk_id=c["chunk_id"],
+                    content=c["content"],
+                    sha_hash=c["sha_hash"]
+                )
+                chunk_objs.append(chunk_obj)
+
+        db.bulk_save_objects(chunk_objs)
+        db.commit()
+
+        # 4. Safely rebuild Chroma collection for this specific repository ONLY
+        vector_store = get_vector_store()
+        logger.info(f"Deleting stale Chroma collection for repository {repo.id}...")
+        vector_store.delete_collection(repo.id)
+        logger.info(f"Upserting {len(all_chunks)} fresh chunks to Chroma collection for repository {repo.id}...")
+        vector_store.upsert_chunks(repo.id, all_chunks)
+
+        # 5. Update repository stats
+        repo.file_count = len(valid_files)
+        repo.chunk_count = len(all_chunks)
+        db.commit()
+
+        logger.info(f"Successfully reindexed repository {repo.name}: {len(valid_files)} files, {len(all_chunks)} chunks.")
+        return {
+            "repository_id": repo.id,
+            "name": repo.name,
+            "files_indexed": len(valid_files),
+            "files_purged": len(ignored_file_ids),
+            "chunks_indexed": len(all_chunks)
+        }
+    finally:
         db.close()

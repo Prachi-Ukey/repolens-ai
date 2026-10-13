@@ -183,6 +183,81 @@ def ask_question(
         grounded=grounded
     )
 
+# ============================================================
+# STREAM ASK QUESTION
+# ============================================================
+from fastapi.responses import StreamingResponse
+
+@router.post(
+    "/chat/stream"
+)
+def ask_question_stream(
+    repo_id: str,
+    request: QuestionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    repo = get_repository_by_id(db, repo_id, current_user.id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+
+    if request.conversation_id:
+        conversation = db.query(Conversation).filter(
+            Conversation.id == request.conversation_id,
+            Conversation.repository_id == repo_id
+        ).first()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+    else:
+        title = request.question[:40]
+        if len(request.question) > 40:
+            title += "..."
+        conversation = Conversation(
+            repository_id=repo_id,
+            user_id=current_user.id,
+            title=title
+        )
+        db.add(conversation)
+        db.flush()
+
+    user_msg = Message(
+        conversation_id=conversation.id,
+        sender="user",
+        content=request.question
+    )
+    db.add(user_msg)
+    db.commit()
+
+    def db_generator():
+        generator = rag_engine.ask_question(
+            repo_id=repo_id,
+            question=request.question,
+            top_k=20,
+            stream=True
+        )
+        
+        # Send conversation_id immediately
+        yield json.dumps({"type": "init", "conversation_id": conversation.id}) + "\n"
+
+        for chunk in generator:
+            yield chunk
+            if '"type": "done"' in chunk:
+                try:
+                    data = json.loads(chunk)
+                    assistant_msg = Message(
+                        conversation_id=conversation.id,
+                        sender="assistant",
+                        content=data.get("answer", ""),
+                        sources_json=json.dumps(data.get("sources", []))
+                    )
+                    db.add(assistant_msg)
+                    db.commit()
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Error saving streamed message: {e}")
+
+    return StreamingResponse(db_generator(), media_type="application/x-ndjson")
+
 
 # ============================================================
 # GET CONVERSATIONS

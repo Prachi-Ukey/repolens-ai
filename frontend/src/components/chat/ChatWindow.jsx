@@ -71,30 +71,76 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
     ]);
 
     try {
-      const res = await api.post(
-        `/repositories/${repoId}/chat`,
-        {
+      const token = localStorage.getItem('repolens_token');
+      
+      const response = await fetch(`/api/repositories/${repoId}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
           conversation_id: conversationId,
           question: questionText,
           top_k: 5
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      
+      let isFirstChunk = true;
+      let assistantMsgId = (Date.now() + 1).toString();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunkText = decoder.decode(value, { stream: true });
+        const lines = chunkText.split('\n').filter(line => line.trim() !== '');
+
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line);
+            
+            if (data.type === 'init') {
+              setConversationId(data.conversation_id);
+              // Add empty assistant message
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: assistantMsgId,
+                  sender: 'assistant',
+                  content: '',
+                  sources: []
+                }
+              ]);
+            } else if (data.type === 'chunk') {
+              setMessages(prev => 
+                prev.map(msg => 
+                  msg.id === assistantMsgId 
+                    ? { ...msg, content: msg.content + data.content } 
+                    : msg
+                )
+              );
+            } else if (data.type === 'done') {
+              setMessages(prev => 
+                prev.map(msg => 
+                  msg.id === assistantMsgId 
+                    ? { ...msg, content: data.answer, sources: data.sources } 
+                    : msg
+                )
+              );
+            }
+          } catch (e) {
+            console.error("Error parsing stream chunk", e, line);
+          }
         }
-      );
-
-      setConversationId(
-        res.data.conversation_id
-      );
-
-      const assistantMsg = {
-        id: (Date.now() + 1).toString(),
-        sender: 'assistant',
-        content: res.data.answer,
-        sources: res.data.sources
-      };
-
-      setMessages(prev => [
-        ...prev,
-        assistantMsg
-      ]);
+      }
 
     } catch (err) {
 
