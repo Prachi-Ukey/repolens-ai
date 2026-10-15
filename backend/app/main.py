@@ -20,9 +20,15 @@ app = FastAPI(
 )
 
 # Configure CORS
+cors_origins = (
+    [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
+    if settings.CORS_ORIGINS and settings.CORS_ORIGINS != "*"
+    else ["*"]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,6 +37,13 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     logger.info(f"Starting {settings.APP_NAME} in [{settings.APP_ENV}] mode...")
+    if str(settings.APP_ENV).strip().lower() == "production":
+        if not settings.CORS_ORIGINS or settings.CORS_ORIGINS.strip() == "*":
+            logger.warning(
+                "Security Warning: CORS_ORIGINS is set to '*' in production while allow_credentials=True. "
+                "Browsers will reject credentialed cross-origin requests. "
+                "Specify your exact deployed frontend origin (e.g. CORS_ORIGINS=https://repolens-ai.vercel.app)."
+            )
     init_db()
 
 @app.exception_handler(Exception)
@@ -56,6 +69,18 @@ def root():
         "status": "online",
         "env": settings.APP_ENV,
         "docs": "/docs"
+    }
+
+@app.get("/health", tags=["Status"])
+def health():
+    active_model = settings.OLLAMA_MODEL if settings.LLM_PROVIDER == "ollama" else getattr(settings, f"{settings.LLM_PROVIDER.upper()}_MODEL", "default")
+    return {
+        "status": "ok",
+        "app": settings.APP_NAME,
+        "env": settings.APP_ENV,
+        "llm_provider": settings.LLM_PROVIDER,
+        "embedding_provider": settings.EMBEDDING_PROVIDER,
+        "model": active_model
     }
 
 if __name__ == "__main__":

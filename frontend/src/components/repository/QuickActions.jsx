@@ -14,7 +14,7 @@ const ACTIONS = [
 
 export const QuickActions = ({ onSelectAction }) => {
   return (
-    <div className="flex items-center gap-2 overflow-x-auto py-2 px-4 bg-[#161B22] border-b border-[#30363D] no-scrollbar select-none">
+    <div className="flex items-center gap-2 overflow-x-auto py-2 px-4 bg-[#161B22] border-b border-[#30363D] no-scrollbar select-none shrink-0">
       <span className="text-[11px] font-mono text-slate-500 flex items-center gap-1 shrink-0">
         <Sparkles className="w-3 h-3 text-blue-400" /> Quick Actions:
       </span>

@@ -7,7 +7,7 @@ if os.path.exists(user_site) and user_site not in sys.path:
 
 import hashlib
 import numpy as np
-from typing import List
+from typing import List, Optional
 from abc import ABC, abstractmethod
 import httpx
 from app.config import settings
@@ -22,6 +22,16 @@ logger = logging.getLogger("repolens.ai.embeddings")
 
 
 class EmbeddingProvider(ABC):
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        pass
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        pass
+
     @abstractmethod
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         pass
@@ -36,13 +46,28 @@ class MockEmbedding(EmbeddingProvider):
     Deterministic pseudo-embedding provider for testing/demo.
     """
 
-    def _text_to_vector(self, text: str, dim: int = 128) -> List[float]:
-        vec = np.zeros(dim, dtype=np.float32)
+    def __init__(self, dim: Optional[int] = None):
+        if dim is not None:
+            self._dim = dim
+        else:
+            self._dim = getattr(settings, "EMBEDDING_DIMENSION", 384)
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return f"mock-embedding-{self._dim}d"
+
+    def _text_to_vector(self, text: str, dim: Optional[int] = None) -> List[float]:
+        target_dim = dim if dim is not None else self._dim
+        vec = np.zeros(target_dim, dtype=np.float32)
         words = text.lower().split()
 
         for idx, word in enumerate(words):
             h = int(hashlib.md5(word.encode("utf-8")).hexdigest(), 16)
-            vec[h % dim] += 1.0 / (idx + 1.0)
+            vec[h % target_dim] += 1.0 / (idx + 1.0)
 
         norm = np.linalg.norm(vec)
 
@@ -65,14 +90,23 @@ class LocalEmbedding(EmbeddingProvider):
     """
 
     def __init__(self):
-        self.model_name = "all-MiniLM-L6-v2"
+        self._model_name = "all-MiniLM-L6-v2"
+        self._dim = 384
 
         if SentenceTransformer is None:
             raise RuntimeError("sentence-transformers package is not installed.")
 
-        logger.info(f"Loading local embedding model: {self.model_name}")
-        self.model = SentenceTransformer(self.model_name)
-        logger.info(f"Local embedding model loaded: {self.model_name}")
+        logger.info(f"Loading local embedding model: {self._model_name}")
+        self.model = SentenceTransformer(self._model_name)
+        logger.info(f"Local embedding model loaded: {self._model_name}")
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         embeddings = self.model.encode(
@@ -94,7 +128,16 @@ class LocalEmbedding(EmbeddingProvider):
 class OpenAIEmbedding(EmbeddingProvider):
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.model = "text-embedding-3-small"
+        self._model = "text-embedding-3-small"
+        self._dim = 1536
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         url = "https://api.openai.com/v1/embeddings"
@@ -104,7 +147,7 @@ class OpenAIEmbedding(EmbeddingProvider):
         }
         payload = {
             "input": texts,
-            "model": self.model
+            "model": self._model
         }
         with httpx.Client(timeout=30.0) as client:
             resp = client.post(url, headers=headers, json=payload)
@@ -117,16 +160,37 @@ class OpenAIEmbedding(EmbeddingProvider):
 
 
 class GeminiEmbedding(EmbeddingProvider):
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-embedding-001",
+        dimension: int = 768
+    ):
         self.api_key = api_key
-        self.model = "text-embedding-004"
+        self._model = model
+        self._dim = dimension
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:batchEmbedContents?key={self.api_key}"
+        if not texts:
+            return []
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:batchEmbedContents?key={self.api_key}"
+        )
         requests = [
             {
-                "model": f"models/{self.model}",
-                "content": {"parts": [{"text": t}]}
+                "model": f"models/{self._model}",
+                "content": {"parts": [{"text": t}]},
+                "outputDimensionality": self._dim
             }
             for t in texts
         ]
@@ -134,10 +198,27 @@ class GeminiEmbedding(EmbeddingProvider):
             resp = client.post(url, json={"requests": requests})
             resp.raise_for_status()
             data = resp.json()
-            return [e["values"] for e in data.get("embeddings", [])]
+            embeddings = [e["values"] for e in data.get("embeddings", [])]
+
+        if len(embeddings) != len(texts):
+            raise ValueError(
+                f"Gemini embedding count mismatch: expected {len(texts)}, got {len(embeddings)}"
+            )
+
+        for idx, emb in enumerate(embeddings):
+            if len(emb) != self._dim:
+                raise ValueError(
+                    f"Gemini embedding dimension mismatch at index {idx}: "
+                    f"expected {self._dim}, got {len(emb)}"
+                )
+
+        return embeddings
 
     def embed_query(self, text: str) -> List[float]:
-        return self.embed_documents([text])[0]
+        results = self.embed_documents([text])
+        if not results:
+            raise ValueError("Gemini embedding returned no vector for query")
+        return results[0]
 
 
 def get_embedding_provider() -> EmbeddingProvider:
@@ -147,16 +228,21 @@ def get_embedding_provider() -> EmbeddingProvider:
         try:
             return LocalEmbedding()
         except Exception as e:
-            logger.warning(f"Failed to load LocalEmbedding: {e}. Falling back to MockEmbedding.")
-            return MockEmbedding()
+            logger.warning(
+                f"Failed to load LocalEmbedding: {e}. Falling back to MockEmbedding (dim={settings.EMBEDDING_DIMENSION})."
+            )
+            return MockEmbedding(dim=settings.EMBEDDING_DIMENSION)
 
     if provider == "openai" and settings.OPENAI_API_KEY:
         return OpenAIEmbedding(settings.OPENAI_API_KEY)
 
     if provider == "gemini" and settings.GEMINI_API_KEY:
-        return GeminiEmbedding(settings.GEMINI_API_KEY)
+        dim = getattr(settings, "EMBEDDING_DIMENSION", 768)
+        if dim != 768:
+            dim = 768
+        return GeminiEmbedding(settings.GEMINI_API_KEY, dimension=dim)
 
     if provider != "mock":
         logger.warning(f"Embedding provider '{provider}' fallback to MockEmbedding.")
 
-    return MockEmbedding()
+    return MockEmbedding(dim=settings.EMBEDDING_DIMENSION)

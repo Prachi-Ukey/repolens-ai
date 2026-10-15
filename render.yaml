@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: repolens-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    plan: standard
+    disk:
+      name: repolens-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:////var/data/repolens.db
+      - key: CHROMA_PERSIST_DIRECTORY
+        value: /var/data/chroma_data
+      # Hosted LLM Provider (Google Gemini as default production provider)
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      # Supply GEMINI_API_KEY securely in the Render Dashboard (never hardcode in repo)
+      - key: GEMINI_API_KEY
+        sync: false
+      # Alternative OpenAI configuration (set LLM_PROVIDER=openai if preferred)
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: EMBEDDING_DIMENSION
+        value: 768
+      # Exact deployed frontend URL (e.g. https://repolens-ai.vercel.app); set in Render Dashboard
+      - key: CORS_ORIGINS
+        sync: false

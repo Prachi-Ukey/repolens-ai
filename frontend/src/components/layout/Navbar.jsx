@@ -13,7 +13,7 @@ export const Navbar = () => {
   };
 
   return (
-    <nav className="h-14 bg-[#161B22] border-b border-[#30363D] px-4 flex items-center justify-between text-sm sticky top-0 z-40">
+    <nav className="h-14 bg-[#161B22] border-b border-[#30363D] px-4 flex items-center justify-between text-sm sticky top-0 z-40 shrink-0">
       <div className="flex items-center space-x-3">
         <Link to="/" className="flex items-center space-x-2.5 font-bold text-white tracking-wide">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20">

@@ -10,19 +10,45 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     const fetchUser = async () => {
-      if (token) {
+      let currentToken = token;
+      if (!currentToken) {
+        try {
+          const demoRes = await api.get('/auth/demo-token');
+          if (demoRes.data && demoRes.data.access_token) {
+            currentToken = demoRes.data.access_token;
+            localStorage.setItem('repolens_token', currentToken);
+            setToken(currentToken);
+          }
+        } catch (err) {
+          console.warn("Could not auto-fetch demo token:", err);
+        }
+      }
+
+      if (currentToken) {
         try {
           const res = await api.get('/auth/me');
           setUser(res.data);
         } catch (err) {
-          console.error("Error loading user session:", err);
-          logout();
+          console.error("Error loading user session, refreshing demo token:", err);
+          try {
+            const demoRes = await api.get('/auth/demo-token');
+            if (demoRes.data && demoRes.data.access_token) {
+              const freshToken = demoRes.data.access_token;
+              localStorage.setItem('repolens_token', freshToken);
+              setToken(freshToken);
+              const res2 = await api.get('/auth/me');
+              setUser(res2.data);
+            }
+          } catch (e) {
+            logout();
+          }
         }
       }
       setLoading(false);
     };
     fetchUser();
   }, [token]);
+
 
   const login = async (username_or_email, password) => {
     const res = await api.post('/auth/login', { username_or_email, password });

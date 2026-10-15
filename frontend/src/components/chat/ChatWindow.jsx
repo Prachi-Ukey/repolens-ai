@@ -72,8 +72,10 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
 
     try {
       const token = localStorage.getItem('repolens_token');
-      
-      const response = await fetch(`/api/repositories/${repoId}/chat/stream`, {
+      const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+      const streamEndpoint = apiBase ? `${apiBase}/repositories/${repoId}/chat/stream` : `/api/repositories/${repoId}/chat/stream`;
+
+      const response = await fetch(streamEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -92,7 +94,7 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
-      
+
       let isFirstChunk = true;
       let assistantMsgId = (Date.now() + 1).toString();
 
@@ -106,7 +108,7 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
         for (const line of lines) {
           try {
             const data = JSON.parse(line);
-            
+
             if (data.type === 'init') {
               setConversationId(data.conversation_id);
               // Add empty assistant message
@@ -120,18 +122,26 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
                 }
               ]);
             } else if (data.type === 'chunk') {
-              setMessages(prev => 
-                prev.map(msg => 
-                  msg.id === assistantMsgId 
-                    ? { ...msg, content: msg.content + data.content } 
+              setMessages(prev =>
+                prev.map(msg =>
+                  msg.id === assistantMsgId
+                    ? { ...msg, content: msg.content + data.content }
+                    : msg
+                )
+              );
+            } else if (data.type === 'error') {
+              setMessages(prev =>
+                prev.map(msg =>
+                  msg.id === assistantMsgId
+                    ? { ...msg, content: data.error || data.content, isError: true, error: true, grounded: false }
                     : msg
                 )
               );
             } else if (data.type === 'done') {
-              setMessages(prev => 
-                prev.map(msg => 
-                  msg.id === assistantMsgId 
-                    ? { ...msg, content: data.answer, sources: data.sources } 
+              setMessages(prev =>
+                prev.map(msg =>
+                  msg.id === assistantMsgId
+                    ? { ...msg, content: data.answer, sources: data.sources, grounded: data.grounded, isError: data.error, error: data.error }
                     : msg
                 )
               );
@@ -167,13 +177,13 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0D1117]">
+    <div className="h-full flex flex-col bg-[#0D1117] min-w-0 min-h-0 overflow-hidden relative">
 
       {/* ---------------------------------------------------
           Chat Header
       --------------------------------------------------- */}
 
-      <div className="flex items-center justify-between px-4 py-3 bg-[#161B22] border-b border-[#30363D]">
+      <div className="shrink-0 flex items-center justify-between px-4 py-3 bg-[#161B22] border-b border-[#30363D]">
 
         <div className="flex items-center gap-2">
           <MessageSquare className="w-4 h-4 text-blue-400" />
@@ -209,7 +219,7 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
           Messages Scroll Area
       --------------------------------------------------- */}
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 font-mono">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 font-mono">
 
         {messages.length === 0 ? (
 
@@ -263,24 +273,24 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
           Input Form
       --------------------------------------------------- */}
 
-      <div className="p-3 bg-[#161B22] border-t border-[#30363D]">
+      <div className="px-4 pt-3 pb-5 bg-[#161B22] border-t border-[#30363D] shrink-0">
 
         <form
           onSubmit={(e) => {
             e.preventDefault();
             handleSendMessage();
           }}
-          className="flex items-center space-x-2 bg-[#0D1117] border border-[#30363D] focus-within:border-blue-500 rounded-xl p-1.5 transition"
+          className="flex items-center space-x-2 bg-[#0D1117] border border-[#30363D] focus-within:border-blue-500 rounded-xl p-1.5 transition w-full min-w-0"
         >
 
           <input
             type="text"
-            placeholder="Ask a question about this repository... (e.g., Where is authentication implemented?)"
+            placeholder="Ask about this repository..."
             value={input}
             onChange={(e) =>
               setInput(e.target.value)
             }
-            className="flex-1 bg-transparent border-none px-3 py-2 text-xs text-slate-100 placeholder-slate-500 font-mono outline-none"
+            className="flex-1 min-w-0 bg-transparent border-none px-3 py-2 text-xs text-slate-100 placeholder-slate-500 font-mono outline-none"
           />
 
           <button
@@ -288,7 +298,7 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
             disabled={
               !input.trim() || loading
             }
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white p-2 rounded-lg transition shadow-md shadow-blue-600/20"
+            className="shrink-0 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white p-2 rounded-lg transition shadow-md shadow-blue-600/20"
           >
             <Send className="w-4 h-4" />
           </button>

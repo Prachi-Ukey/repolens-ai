@@ -4,16 +4,19 @@ __pycache__/
 *$py.class
 *.so
 
-# Environments & Data
+# Environments, secrets, and local data
 .venv/
 venv/
 env/
 ENV/
+.env
+.env.*
+!.env.example
+!**/.env.example
 *.db
 *.sqlite3
+*.bak
 chroma_data/
-.env
-.env.local
 
 # Node
 node_modules/

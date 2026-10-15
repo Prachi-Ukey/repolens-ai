@@ -7,7 +7,13 @@ def test_mock_embedding():
     provider = MockEmbedding()
     vecs = provider.embed_documents(["hello codebase", "auth middleware"])
     assert len(vecs) == 2
-    assert len(vecs[0]) == 128
+    assert len(vecs[0]) == provider.dimension
+    assert provider.dimension == 384
+
+    # Explicit custom dimension support
+    provider_128 = MockEmbedding(dim=128)
+    vecs_128 = provider_128.embed_documents(["test"])
+    assert len(vecs_128[0]) == 128
 
 def test_prompt_injection_defense():
     chunks = [{

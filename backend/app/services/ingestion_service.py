@@ -172,11 +172,41 @@ def reindex_existing_repository(repository_id: str) -> Dict[str, Any]:
             db.query(RepositoryFile).filter(RepositoryFile.id.in_(ignored_file_ids)).delete(synchronize_session=False)
             db.commit()
 
-        # 2. Clear existing code chunks for this repository
+        # 2. Check if local source files are available on disk and refresh content if modified
+        for f in valid_files:
+            norm_p = f.file_path.replace("\\", "/").strip().lstrip("./")
+            candidates = [
+                norm_p,
+                os.path.join("..", norm_p),
+                os.path.join(".", norm_p),
+                os.path.abspath(norm_p),
+                os.path.abspath(os.path.join("..", norm_p)),
+            ]
+            if norm_p.startswith("backend/"):
+                sub_p = norm_p[len("backend/"):]
+                candidates.extend([sub_p, os.path.join(".", sub_p), os.path.abspath(sub_p)])
+
+            disk_content = None
+            for cand in candidates:
+                if os.path.isfile(cand):
+                    try:
+                        with open(cand, "r", encoding="utf-8", errors="replace") as fp_in:
+                            disk_content = fp_in.read()
+                        break
+                    except Exception:
+                        pass
+            if disk_content is not None and disk_content != f.content:
+                logger.info(f"Refreshing {f.file_path} from disk ({len(f.content.splitlines())} -> {len(disk_content.splitlines())} lines)")
+                f.content = disk_content
+                f.line_count = len(disk_content.splitlines())
+                f.size_bytes = len(disk_content.encode("utf-8"))
+        db.commit()
+
+        # 3. Clear existing code chunks for this repository
         db.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).delete()
         db.commit()
 
-        # 3. Re-chunk valid files
+        # 4. Re-chunk valid files
         all_chunks = []
         chunk_objs = []
         for f in valid_files:
@@ -204,14 +234,14 @@ def reindex_existing_repository(repository_id: str) -> Dict[str, Any]:
         db.bulk_save_objects(chunk_objs)
         db.commit()
 
-        # 4. Safely rebuild Chroma collection for this specific repository ONLY
+        # 5. Safely rebuild Chroma collection for this specific repository ONLY
         vector_store = get_vector_store()
         logger.info(f"Deleting stale Chroma collection for repository {repo.id}...")
         vector_store.delete_collection(repo.id)
         logger.info(f"Upserting {len(all_chunks)} fresh chunks to Chroma collection for repository {repo.id}...")
         vector_store.upsert_chunks(repo.id, all_chunks)
 
-        # 5. Update repository stats
+        # 6. Update repository stats
         repo.file_count = len(valid_files)
         repo.chunk_count = len(all_chunks)
         db.commit()
@@ -223,6 +253,106 @@ def reindex_existing_repository(repository_id: str) -> Dict[str, Any]:
             "files_indexed": len(valid_files),
             "files_purged": len(ignored_file_ids),
             "chunks_indexed": len(all_chunks)
+        }
+    finally:
+        db.close()
+
+
+def reindex_single_repository_file(repository_id: str, file_path: str) -> Dict[str, Any]:
+    """
+    Safely reindexes a single file within a repository without touching any other files,
+    collections, conversations, or repositories.
+    """
+    from app.github.parser import parse_file_into_chunks
+
+    db = SessionLocal()
+    try:
+        repo = db.query(Repository).filter(Repository.id == repository_id).first()
+        if not repo:
+            raise ValueError(f"Repository '{repository_id}' not found.")
+
+        clean_fp = file_path.replace("\\", "/").strip().lstrip("./")
+        rf = db.query(RepositoryFile).filter(
+            RepositoryFile.repository_id == repo.id,
+            RepositoryFile.file_path.ilike(f"%{clean_fp}")
+        ).first()
+        if not rf:
+            raise ValueError(f"File '{file_path}' not found in repository '{repository_id}'.")
+
+        # Refresh from disk if available
+        candidates = [
+            clean_fp,
+            os.path.join("..", clean_fp),
+            os.path.join(".", clean_fp),
+            os.path.abspath(clean_fp),
+            os.path.abspath(os.path.join("..", clean_fp)),
+        ]
+        if clean_fp.startswith("backend/"):
+            sub_p = clean_fp[len("backend/"):]
+            candidates.extend([sub_p, os.path.join(".", sub_p), os.path.abspath(sub_p)])
+
+        disk_content = None
+        for cand in candidates:
+            if os.path.isfile(cand):
+                try:
+                    with open(cand, "r", encoding="utf-8", errors="replace") as fp_in:
+                        disk_content = fp_in.read()
+                    break
+                except Exception:
+                    pass
+
+        if disk_content is not None:
+            rf.content = disk_content
+            rf.line_count = len(disk_content.splitlines())
+            rf.size_bytes = len(disk_content.encode("utf-8"))
+
+        fresh_chunks = parse_file_into_chunks(
+            file_path=rf.file_path,
+            content=rf.content,
+            language=rf.language or "python"
+        )
+
+        db.query(CodeChunk).filter(
+            CodeChunk.repository_id == repo.id,
+            CodeChunk.file_id == rf.id
+        ).delete()
+
+        chunk_objs = []
+        for c in fresh_chunks:
+            c_obj = CodeChunk(
+                repository_id=repo.id,
+                file_id=rf.id,
+                file_path=c["file_path"],
+                language=c["language"],
+                start_line=c["start_line"],
+                end_line=c["end_line"],
+                symbol_name=c["symbol_name"],
+                chunk_id=c["chunk_id"],
+                content=c["content"],
+                sha_hash=c["sha_hash"]
+            )
+            chunk_objs.append(c_obj)
+        db.bulk_save_objects(chunk_objs)
+        db.commit()
+
+        # Update Chroma collection with fresh chunks for this file
+        vector_store = get_vector_store()
+        try:
+            col = vector_store.get_or_create_collection(repo.id)
+            col.delete(where={"file_path": rf.file_path})
+        except Exception as e_del:
+            logger.warning(f"Could not delete old Chroma chunks for {rf.file_path}: {e_del}")
+        vector_store.upsert_chunks(repo.id, fresh_chunks)
+
+        total_chunks = db.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).count()
+        repo.chunk_count = total_chunks
+        db.commit()
+
+        return {
+            "repository_id": repo.id,
+            "file_path": rf.file_path,
+            "chunks_indexed": len(fresh_chunks),
+            "line_count": rf.line_count
         }
     finally:
         db.close()

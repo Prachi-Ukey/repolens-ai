@@ -87,11 +87,12 @@ def get_files(repo_id: str, db: Session = Depends(get_db), current_user: User = 
         "flat_files": [RepositoryFileResponse.model_validate(f) for f in files]
     }
 
-@router.get("/{repo_id}/files/{file_id}", response_model=RepositoryFileResponse)
+@router.get("/{repo_id}/files/{file_id:path}", response_model=RepositoryFileResponse)
 def get_file_content(repo_id: str, file_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from sqlalchemy import or_
     file_obj = db.query(RepositoryFile).filter(
-        RepositoryFile.id == file_id,
-        RepositoryFile.repository_id == repo_id
+        RepositoryFile.repository_id == repo_id,
+        or_(RepositoryFile.id == file_id, RepositoryFile.file_path == file_id)
     ).first()
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found.")
@@ -104,3 +105,32 @@ def get_architecture(repo_id: str, db: Session = Depends(get_db), current_user: 
         raise HTTPException(status_code=404, detail="Repository not found.")
     graph = generate_architecture_graph(repo_id, db)
     return graph
+
+@router.get("/{repo_id}/overview")
+def get_repository_overview(repo_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    repo = get_repository_by_id(db, repo_id, current_user.id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+
+    readme_file = db.query(RepositoryFile).filter(
+        RepositoryFile.repository_id == repo_id,
+        RepositoryFile.file_name.ilike("readme%")
+    ).first()
+
+    readme_preview = ""
+    if readme_file and readme_file.content:
+        readme_preview = readme_file.content[:3000]
+
+    return {
+        "id": repo.id,
+        "name": repo.name,
+        "owner": repo.owner,
+        "url": repo.url,
+        "description": repo.description or f"Public repository {repo.owner}/{repo.name}",
+        "primary_language": repo.primary_language,
+        "file_count": repo.file_count,
+        "chunk_count": repo.chunk_count,
+        "status": repo.status,
+        "summary_json": repo.summary_json,
+        "readme_preview": readme_preview
+    }

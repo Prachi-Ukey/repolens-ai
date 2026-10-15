@@ -1,7 +1,10 @@
 import axios from 'axios';
 
+const apiBase = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const baseURL = apiBase ? `${apiBase}` : '/api';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -23,12 +26,10 @@ api.interceptors.response.use(
   (error) => {
     if (error.response && error.response.status === 401) {
       localStorage.removeItem('repolens_token');
-      if (window.location.pathname !== '/login' && window.location.pathname !== '/register' && window.location.pathname !== '/') {
-        window.location.href = '/login';
-      }
     }
     return Promise.reject(error);
   }
 );
+
 
 export default api;
