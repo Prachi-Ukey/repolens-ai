@@ -94,6 +94,35 @@ class Settings(BaseSettings):
                     "Please set SECRET_KEY to a cryptographically random string with at least 16 characters "
                     "(e.g., generated with `openssl rand -hex 32`)."
                 )
+
+            # Validate required production AI provider API keys
+            emb_provider = str(self.EMBEDDING_PROVIDER).strip().lower()
+            if emb_provider == "gemini" and not (self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip()):
+                raise ValueError(
+                    "Production configuration error: In production (APP_ENV=production), "
+                    "GEMINI_API_KEY must be configured when EMBEDDING_PROVIDER='gemini'. "
+                    "Found missing or empty API key. Please supply GEMINI_API_KEY in your environment variables."
+                )
+            elif emb_provider == "openai" and not (self.OPENAI_API_KEY and self.OPENAI_API_KEY.strip()):
+                raise ValueError(
+                    "Production configuration error: In production (APP_ENV=production), "
+                    "OPENAI_API_KEY must be configured when EMBEDDING_PROVIDER='openai'. "
+                    "Found missing or empty API key. Please supply OPENAI_API_KEY in your environment variables."
+                )
+
+            llm_prov = str(self.LLM_PROVIDER).strip().lower()
+            if llm_prov == "gemini" and not (self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip()):
+                raise ValueError(
+                    "Production configuration error: In production (APP_ENV=production), "
+                    "GEMINI_API_KEY must be configured when LLM_PROVIDER='gemini'. "
+                    "Found missing or empty API key. Please supply GEMINI_API_KEY in your environment variables."
+                )
+            elif llm_prov == "openai" and not (self.OPENAI_API_KEY and self.OPENAI_API_KEY.strip()):
+                raise ValueError(
+                    "Production configuration error: In production (APP_ENV=production), "
+                    "OPENAI_API_KEY must be configured when LLM_PROVIDER='openai'. "
+                    "Found missing or empty API key. Please supply OPENAI_API_KEY in your environment variables."
+                )
         else:
             # Development-only fallback:
             if not current_secret or current_secret in KNOWN_INSECURE_SECRETS or current_secret.upper().startswith("CHANGE_ME"):

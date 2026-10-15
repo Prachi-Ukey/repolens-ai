@@ -141,3 +141,86 @@ class TestAuthAndCorsConfiguration:
         assert len(parsed) == 2
         assert "https://repolens-ai.vercel.app" in parsed
         assert "https://repolens-preview.vercel.app" in parsed
+
+
+class TestProductionAIProviderConfiguration:
+    """Test strict fail-fast validation for AI providers in production mode."""
+
+    def test_production_fails_fast_when_gemini_api_key_missing_for_embeddings(self):
+        with pytest.raises(ValueError, match="GEMINI_API_KEY must be configured when EMBEDDING_PROVIDER='gemini'"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                EMBEDDING_PROVIDER="gemini",
+                GEMINI_API_KEY=None,
+            )
+
+    def test_production_fails_fast_when_gemini_api_key_empty_for_embeddings(self):
+        with pytest.raises(ValueError, match="GEMINI_API_KEY must be configured when EMBEDDING_PROVIDER='gemini'"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                EMBEDDING_PROVIDER="gemini",
+                GEMINI_API_KEY="   ",
+            )
+
+    def test_production_fails_fast_when_gemini_api_key_missing_for_llm(self):
+        with pytest.raises(ValueError, match="GEMINI_API_KEY must be configured when LLM_PROVIDER='gemini'"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                LLM_PROVIDER="gemini",
+                GEMINI_API_KEY="",
+            )
+
+    def test_production_fails_fast_when_openai_api_key_missing_for_embeddings(self):
+        with pytest.raises(ValueError, match="OPENAI_API_KEY must be configured when EMBEDDING_PROVIDER='openai'"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                EMBEDDING_PROVIDER="openai",
+                OPENAI_API_KEY=None,
+            )
+
+    def test_production_fails_fast_when_openai_api_key_missing_for_llm(self):
+        with pytest.raises(ValueError, match="OPENAI_API_KEY must be configured when LLM_PROVIDER='openai'"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                LLM_PROVIDER="openai",
+                OPENAI_API_KEY=None,
+            )
+
+    def test_get_embedding_provider_fails_fast_when_key_missing_in_production(self, monkeypatch):
+        from app.ai.embeddings import get_embedding_provider
+        import app.config as config_mod
+
+        # Simulate settings with production and gemini embedding without key
+        test_settings = Settings(
+            APP_ENV="production",
+            SECRET_KEY="strong-valid-secret-key-123456",
+            EMBEDDING_PROVIDER="mock",  # instantiate Settings without error
+        )
+        test_settings.EMBEDDING_PROVIDER = "gemini"
+        test_settings.GEMINI_API_KEY = None
+        monkeypatch.setattr(config_mod, "settings", test_settings)
+        monkeypatch.setattr("app.ai.embeddings.settings", test_settings)
+
+        with pytest.raises(ValueError, match="GEMINI_API_KEY must be provided"):
+            get_embedding_provider()
+
+    def test_production_succeeds_with_valid_gemini_configuration(self):
+        s = Settings(
+            APP_ENV="production",
+            SECRET_KEY="strong-valid-secret-key-123456",
+            EMBEDDING_PROVIDER="gemini",
+            EMBEDDING_DIMENSION=768,
+            LLM_PROVIDER="gemini",
+            GEMINI_API_KEY="test-valid-gemini-api-key",
+            GEMINI_MODEL="gemini-2.5-flash",
+        )
+        assert s.APP_ENV == "production"
+        assert s.EMBEDDING_PROVIDER == "gemini"
+        assert s.EMBEDDING_DIMENSION == 768
+        assert s.LLM_PROVIDER == "gemini"
+        assert s.GEMINI_API_KEY == "test-valid-gemini-api-key"

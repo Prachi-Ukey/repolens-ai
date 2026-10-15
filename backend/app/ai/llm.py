@@ -1,4 +1,4 @@
-﻿from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod
 import logging
 import re
 import time
@@ -1502,10 +1502,14 @@ def get_llm_provider() -> LLMProvider:
     # OpenAI
     # ---------------------------------------------------------
 
-    if (
-        provider == "openai"
-        and settings.OPENAI_API_KEY
-    ):
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
+                raise ValueError(
+                    "Production LLM configuration error: OPENAI_API_KEY must be configured when LLM_PROVIDER='openai'."
+                )
+            logger.warning("OpenAI API key missing; falling back to MockLLM.")
+            return MockLLM()
 
         logger.info(
             "Using OpenAI LLM: %s",
@@ -1521,10 +1525,14 @@ def get_llm_provider() -> LLMProvider:
     # Gemini
     # ---------------------------------------------------------
 
-    if (
-        provider == "gemini"
-        and settings.GEMINI_API_KEY
-    ):
+    if provider == "gemini":
+        if not settings.GEMINI_API_KEY:
+            if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
+                raise ValueError(
+                    "Production LLM configuration error: GEMINI_API_KEY must be configured when LLM_PROVIDER='gemini'."
+                )
+            logger.warning("Gemini API key missing; falling back to MockLLM.")
+            return MockLLM()
 
         logger.info(
             "Using Gemini LLM: %s",
@@ -1541,6 +1549,10 @@ def get_llm_provider() -> LLMProvider:
     # ---------------------------------------------------------
 
     if provider != "mock":
+        if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
+            raise ValueError(
+                f"Production LLM configuration error: Unsupported or unconfigured LLM provider '{provider}'."
+            )
 
         logger.warning(
             "LLM provider '%s' API key missing "

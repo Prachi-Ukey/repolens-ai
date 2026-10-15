@@ -223,26 +223,44 @@ class GeminiEmbedding(EmbeddingProvider):
 
 def get_embedding_provider() -> EmbeddingProvider:
     provider = settings.EMBEDDING_PROVIDER.lower()
+    is_production = str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production"
 
     if provider == "local":
         try:
             return LocalEmbedding()
         except Exception as e:
+            if is_production:
+                raise RuntimeError(
+                    f"Production embedding configuration error: LocalEmbedding failed to load: {e}. "
+                    "Sentence-transformers cannot be loaded in production."
+                )
             logger.warning(
                 f"Failed to load LocalEmbedding: {e}. Falling back to MockEmbedding (dim={settings.EMBEDDING_DIMENSION})."
             )
             return MockEmbedding(dim=settings.EMBEDDING_DIMENSION)
 
-    if provider == "openai" and settings.OPENAI_API_KEY:
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise ValueError(
+                "OpenAI API key missing: OPENAI_API_KEY must be provided when EMBEDDING_PROVIDER='openai'."
+            )
         return OpenAIEmbedding(settings.OPENAI_API_KEY)
 
-    if provider == "gemini" and settings.GEMINI_API_KEY:
+    if provider == "gemini":
+        if not settings.GEMINI_API_KEY:
+            raise ValueError(
+                "Gemini API key missing: GEMINI_API_KEY must be provided when EMBEDDING_PROVIDER='gemini'."
+            )
         dim = getattr(settings, "EMBEDDING_DIMENSION", 768)
         if dim != 768:
             dim = 768
         return GeminiEmbedding(settings.GEMINI_API_KEY, dimension=dim)
 
     if provider != "mock":
+        if is_production:
+            raise ValueError(
+                f"Production configuration error: Unsupported or unconfigured embedding provider '{provider}'."
+            )
         logger.warning(f"Embedding provider '{provider}' fallback to MockEmbedding.")
 
     return MockEmbedding(dim=settings.EMBEDDING_DIMENSION)
