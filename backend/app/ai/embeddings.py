@@ -1,16 +1,16 @@
 import os
 import sys
+import time
+import hashlib
+import logging
+from abc import ABC, abstractmethod
+from typing import List, Optional
 
 user_site = os.path.expanduser(
     "~/AppData/Roaming/Python/Python313/site-packages"
 )
 if os.path.exists(user_site) and user_site not in sys.path:
     sys.path.insert(0, user_site)
-
-import hashlib
-import logging
-from abc import ABC, abstractmethod
-from typing import List, Optional
 
 import httpx
 import numpy as np
@@ -178,7 +178,7 @@ class OpenAIEmbedding(EmbeddingProvider):
 
 
 class GeminiEmbedding(EmbeddingProvider):
-    """Gemini embeddings with bounded request batches and safe error reporting."""
+    """Gemini embeddings with smaller batches and paced requests."""
 
     def __init__(
         self,
@@ -211,11 +211,16 @@ class GeminiEmbedding(EmbeddingProvider):
             "Content-Type": "application/json",
         }
 
-        batch_size = 20
+        batch_size = 5
+        batch_delay_seconds = 2
         all_embeddings: List[List[float]] = []
 
         with httpx.Client(timeout=60.0) as client:
             for start in range(0, len(texts), batch_size):
+                # Pace requests to reduce bursts against the API quota.
+                if start > 0:
+                    time.sleep(batch_delay_seconds)
+
                 batch = texts[start : start + batch_size]
 
                 requests = [
@@ -243,7 +248,7 @@ class GeminiEmbedding(EmbeddingProvider):
                     ) from None
 
                 if resp.status_code >= 400:
-                    # The key is not included in the URL or error message.
+                    # Never put the API key in the URL or log it.
                     error_detail = resp.text[:1500]
                     raise RuntimeError(
                         "Gemini embedding API error "
@@ -330,8 +335,7 @@ def get_embedding_provider() -> EmbeddingProvider:
     if provider == "gemini":
         if not settings.GEMINI_API_KEY:
             raise ValueError(
-                "Gemini API key missing: GEMINI_API_KEY must be provided "
-                "when EMBEDDING_PROVIDER='gemini'."
+                "GEMINI_API_KEY must be provided in production."
             )
 
         dimension = getattr(settings, "EMBEDDING_DIMENSION", 768)
