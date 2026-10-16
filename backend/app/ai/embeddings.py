@@ -3,6 +3,8 @@ import sys
 import time
 import hashlib
 import logging
+import threading
+import random
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
@@ -48,11 +50,16 @@ class EmbeddingProvider(ABC):
 class MockEmbedding(EmbeddingProvider):
     """Deterministic pseudo-embedding provider for testing/demo."""
 
-    def __init__(self, dim: Optional[int] = None):
+    def __init__(self, dim: Optional[int] = None, model_name: Optional[str] = None):
         self._dim = (
             dim
             if dim is not None
             else getattr(settings, "EMBEDDING_DIMENSION", 384)
+        )
+        self._model_name = (
+            model_name
+            if model_name is not None
+            else f"mock-embedding-{self._dim}d"
         )
 
     @property
@@ -61,7 +68,7 @@ class MockEmbedding(EmbeddingProvider):
 
     @property
     def model_name(self) -> str:
-        return f"mock-embedding-{self._dim}d"
+        return self._model_name
 
     def _text_to_vector(
         self, text: str, dim: Optional[int] = None
@@ -86,21 +93,55 @@ class MockEmbedding(EmbeddingProvider):
         return self._text_to_vector(text)
 
 
+_cached_local_model = None
+_local_model_lock = threading.Lock()
+
+
 class LocalEmbedding(EmbeddingProvider):
-    """Semantic embeddings generated locally using Sentence Transformers."""
+    """Semantic embeddings generated locally using Sentence Transformers with lazy singleton caching."""
 
-    def __init__(self):
-        self._model_name = "all-MiniLM-L6-v2"
+    def __init__(
+        self,
+        model_name: str = "all-MiniLM-L6-v2",
+        batch_size: int = 32,
+    ):
+        self._model_name = model_name
         self._dim = 384
+        self._batch_size = batch_size
 
-        if SentenceTransformer is None:
-            raise RuntimeError(
-                "sentence-transformers package is not installed."
-            )
+    def _load_model(self):
+        global _cached_local_model
+        if _cached_local_model is not None:
+            return _cached_local_model
 
-        logger.info("Loading local embedding model: %s", self._model_name)
-        self.model = SentenceTransformer(self._model_name)
-        logger.info("Local embedding model loaded: %s", self._model_name)
+        with _local_model_lock:
+            if _cached_local_model is not None:
+                return _cached_local_model
+
+            if SentenceTransformer is None:
+                raise RuntimeError(
+                    "sentence-transformers package is not installed. "
+                    "Install sentence-transformers via `pip install sentence-transformers` to use local embeddings."
+                )
+
+            logger.info("Initializing local embedding model lazily: %s", self._model_name)
+            try:
+                _cached_local_model = SentenceTransformer(self._model_name)
+                logger.info("Local embedding model loaded successfully: %s", self._model_name)
+            except Exception as exc:
+                logger.error("Failed to load local embedding model '%s': %s", self._model_name, exc, exc_info=True)
+                raise RuntimeError(
+                    f"Failed to load or download local embedding model '{self._model_name}': {exc}. "
+                    "Ensure internet access is available for the initial model download (~80MB), "
+                    "or pre-cache the model files in your Hugging Face cache directory."
+                ) from exc
+
+            return _cached_local_model
+
+    @property
+    def model(self):
+        """Lazy-loaded singleton model instance for backward compatibility."""
+        return self._load_model()
 
     @property
     def dimension(self) -> int:
@@ -114,20 +155,34 @@ class LocalEmbedding(EmbeddingProvider):
         if not texts:
             return []
 
-        embeddings = self.model.encode(
-            texts,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return embeddings.tolist()
+        model = self._load_model()
+        try:
+            embeddings = model.encode(
+                texts,
+                batch_size=self._batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            return embeddings.tolist()
+        except Exception as exc:
+            logger.error("Local embedding document inference error: %s", exc, exc_info=True)
+            raise RuntimeError(f"Local embedding generation failed for model '{self._model_name}': {exc}") from exc
 
     def embed_query(self, text: str) -> List[float]:
-        embedding = self.model.encode(
-            text,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return embedding.tolist()
+        if not text:
+            return [0.0] * self._dim
+
+        model = self._load_model()
+        try:
+            embedding = model.encode(
+                text,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            return embedding.tolist()
+        except Exception as exc:
+            logger.error("Local embedding query inference error: %s", exc, exc_info=True)
+            raise RuntimeError(f"Local query embedding generation failed for model '{self._model_name}': {exc}") from exc
 
 
 class OpenAIEmbedding(EmbeddingProvider):
@@ -235,21 +290,45 @@ class GeminiEmbedding(EmbeddingProvider):
                     for text in batch
                 ]
 
-                try:
-                    resp = client.post(
-                        url,
-                        headers=headers,
-                        json={"requests": requests},
-                    )
-                except httpx.HTTPError as exc:
-                    raise RuntimeError(
-                        "Unable to reach Gemini embedding API: "
-                        f"{type(exc).__name__}"
-                    ) from None
+                resp = None
+                max_retries = 2
+                for attempt in range(max_retries + 1):
+                    try:
+                        resp = client.post(
+                            url,
+                            headers=headers,
+                            json={"requests": requests},
+                        )
+                    except httpx.HTTPError as exc:
+                        if attempt < max_retries:
+                            time.sleep((2 ** attempt) + random.uniform(0.2, 0.5))
+                            continue
+                        raise RuntimeError(
+                            "Unable to reach Gemini embedding API: "
+                            f"{type(exc).__name__}"
+                        ) from None
+
+                    if resp.status_code == 429:
+                        retry_after = resp.headers.get("Retry-After")
+                        if retry_after and retry_after.isdigit() and int(retry_after) <= 5 and attempt < max_retries:
+                            time.sleep(int(retry_after) + random.uniform(0.1, 0.5))
+                            continue
+                        raise RuntimeError(
+                            "Gemini embedding API quota exceeded (HTTP 429: RESOURCE_EXHAUSTED). "
+                            "The Gemini embedding free-tier rate limit (30K TPM / daily quota) has been reached. "
+                            "To index repositories completely free without token quotas, configure "
+                            "EMBEDDING_PROVIDER=local and EMBEDDING_DIMENSION=384 in your environment."
+                        )
+
+                    if resp.status_code in (408, 500, 502, 503, 504) and attempt < max_retries:
+                        time.sleep((2 ** attempt) + random.uniform(0.2, 0.5))
+                        continue
+
+                    break
 
                 if resp.status_code >= 400:
                     # Never put the API key in the URL or log it.
-                    error_detail = resp.text[:1500]
+                    error_detail = resp.text[:1500].replace(self.api_key, "[REDACTED]")
                     raise RuntimeError(
                         "Gemini embedding API error "
                         f"(HTTP {resp.status_code}): {error_detail}"
@@ -296,6 +375,35 @@ class GeminiEmbedding(EmbeddingProvider):
         return results[0]
 
 
+def get_active_embedding_model_name() -> str:
+    """
+    Returns the active embedding model name based on current settings and provider.
+    Guaranteed to return a non-'unknown' active model name for standard providers.
+    """
+    provider_type = str(getattr(settings, "EMBEDDING_PROVIDER", "")).strip().lower()
+    if provider_type == "local":
+        return (
+            getattr(settings, "LOCAL_EMBEDDING_MODEL", None)
+            or getattr(settings, "SENTENCE_TRANSFORMERS_MODEL", None)
+            or "all-MiniLM-L6-v2"
+        )
+    elif provider_type == "gemini":
+        return (
+            getattr(settings, "GEMINI_EMBEDDING_MODEL", None)
+            or getattr(settings, "GEMINI_MODEL", None)
+            or "gemini-embedding-001"
+        )
+    elif provider_type == "openai":
+        return (
+            getattr(settings, "OPENAI_EMBEDDING_MODEL", None)
+            or "text-embedding-3-small"
+        )
+    elif provider_type == "mock":
+        dim = getattr(settings, "EMBEDDING_DIMENSION", 384)
+        return getattr(settings, "MOCK_EMBEDDING_MODEL", None) or f"mock-embedding-{dim}d"
+    return getattr(settings, "EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
+
 def get_embedding_provider() -> EmbeddingProvider:
     provider = str(settings.EMBEDDING_PROVIDER).strip().lower()
     is_production = (
@@ -306,8 +414,13 @@ def get_embedding_provider() -> EmbeddingProvider:
     )
 
     if provider == "local":
+        model_name = (
+            getattr(settings, "LOCAL_EMBEDDING_MODEL", None)
+            or getattr(settings, "SENTENCE_TRANSFORMERS_MODEL", None)
+            or "all-MiniLM-L6-v2"
+        )
         try:
-            return LocalEmbedding()
+            return LocalEmbedding(model_name=model_name)
         except Exception as exc:
             if is_production:
                 raise RuntimeError(
@@ -322,7 +435,10 @@ def get_embedding_provider() -> EmbeddingProvider:
                 exc,
                 settings.EMBEDDING_DIMENSION,
             )
-            return MockEmbedding(dim=settings.EMBEDDING_DIMENSION)
+            return MockEmbedding(
+                dim=settings.EMBEDDING_DIMENSION,
+                model_name=f"mock-fallback-{settings.EMBEDDING_DIMENSION}d",
+            )
 
     if provider == "openai":
         if not settings.OPENAI_API_KEY:
@@ -330,7 +446,8 @@ def get_embedding_provider() -> EmbeddingProvider:
                 "OpenAI API key missing: OPENAI_API_KEY must be provided "
                 "when EMBEDDING_PROVIDER='openai'."
             )
-        return OpenAIEmbedding(settings.OPENAI_API_KEY)
+        model_name = getattr(settings, "OPENAI_EMBEDDING_MODEL", None) or "text-embedding-3-small"
+        return OpenAIEmbedding(settings.OPENAI_API_KEY, model=model_name)
 
     if provider == "gemini":
         if not settings.GEMINI_API_KEY:
@@ -346,8 +463,10 @@ def get_embedding_provider() -> EmbeddingProvider:
             )
             dimension = 768
 
+        model_name = getattr(settings, "GEMINI_EMBEDDING_MODEL", None) or "gemini-embedding-001"
         return GeminiEmbedding(
             settings.GEMINI_API_KEY,
+            model=model_name,
             dimension=dimension,
         )
 
@@ -364,4 +483,8 @@ def get_embedding_provider() -> EmbeddingProvider:
             provider,
         )
 
-    return MockEmbedding(dim=settings.EMBEDDING_DIMENSION)
+    return MockEmbedding(
+        dim=settings.EMBEDDING_DIMENSION,
+        model_name=getattr(settings, "MOCK_EMBEDDING_MODEL", None),
+    )
+

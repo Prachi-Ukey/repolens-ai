@@ -1398,12 +1398,17 @@ class GeminiLLM(LLMProvider):
         system_prompt: str,
         user_prompt: str
     ) -> str:
-
+        import random
+        # Security: Never pass API keys in query parameters or URLs.
+        # Pass authentication strictly via x-goog-api-key HTTP header.
         url = (
             "https://generativelanguage.googleapis.com/"
             f"v1beta/models/{self.model}:generateContent"
-            f"?key={self.api_key}"
         )
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
 
         payload = {
             "system_instruction": {
@@ -1413,7 +1418,6 @@ class GeminiLLM(LLMProvider):
                     }
                 ]
             },
-
             "contents": [
                 {
                     "parts": [
@@ -1423,48 +1427,63 @@ class GeminiLLM(LLMProvider):
                     ]
                 }
             ],
-
             "generationConfig": {
                 "temperature": 0.1
             }
         }
 
-        with httpx.Client(
-            timeout=45.0
-        ) as client:
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                with httpx.Client(timeout=45.0) as client:
+                    response = client.post(
+                        url,
+                        headers=headers,
+                        json=payload
+                    )
 
-            response = client.post(
-                url,
-                json=payload
-            )
+                    if response.status_code == 429:
+                        # Rate limit reached
+                        retry_after = response.headers.get("Retry-After")
+                        if retry_after and retry_after.isdigit() and int(retry_after) <= 5 and attempt < max_retries:
+                            time.sleep(int(retry_after) + random.uniform(0.1, 0.5))
+                            continue
+                        logger.warning("Gemini LLM API rate limit reached (HTTP 429).")
+                        return (
+                            "Gemini API rate limit reached (HTTP 429: RESOURCE_EXHAUSTED). "
+                            "Please wait a few moments before submitting another request."
+                        )
 
-            response.raise_for_status()
+                    if response.status_code in (408, 500, 502, 503, 504) and attempt < max_retries:
+                        delay = (2 ** attempt) + random.uniform(0.2, 0.6)
+                        time.sleep(delay)
+                        continue
 
-            data = response.json()
+                    response.raise_for_status()
+                    data = response.json()
 
-            candidates = data.get(
-                "candidates",
-                []
-            )
+                    candidates = data.get("candidates", [])
+                    if candidates and candidates[0].get("content", {}).get("parts"):
+                        return candidates[0]["content"]["parts"][0]["text"]
 
-            if (
-                candidates
-                and candidates[0]
-                .get("content", {})
-                .get("parts")
-            ):
+                    return (
+                        "I couldn't find enough evidence "
+                        "in the repository to answer "
+                        "this confidently."
+                    )
+            except httpx.HTTPStatusError as e:
+                if attempt >= max_retries:
+                    logger.error("Gemini LLM HTTP error: HTTP %s", e.response.status_code)
+                    return (
+                        f"AI service returned HTTP {e.response.status_code}. "
+                        "Please verify your Gemini configuration or try again later."
+                    )
+            except Exception as e:
+                if attempt >= max_retries:
+                    logger.error("Gemini LLM request error: %s", type(e).__name__)
+                    return "Unable to connect to the Gemini AI service. Please try again later."
 
-                return (
-                    candidates[0]
-                    ["content"]["parts"][0]
-                    ["text"]
-                )
-
-            return (
-                "I couldn't find enough evidence "
-                "in the repository to answer "
-                "this confidently."
-            )
+        return "I couldn't find enough evidence in the repository to answer this confidently."
 
     def stream_response(
         self,

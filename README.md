@@ -22,15 +22,17 @@ RepoLens AI is a production-ready, AI-powered codebase intelligence platform tha
 - **GitHub Repository Ingestion & Analysis** — Clones, parses, and indexes public GitHub repositories for code navigation and Q&A.
 - **AST-Aware Code Parsing** — Deconstructs Python source code into classes, functions, and modules, preserving symbol names, docstrings, and exact line boundaries.
 - **Hybrid RAG Pipeline** — Combines vector similarity search (ChromaDB) with keyword/symbol matching to retrieve the most relevant source snippets.
-- **Strict Citation Verification** — Validates every generated citation against current repository source lines to guarantee zero fabricated references or phantom lines.
-- **Multi-Provider LLM Engine**:
+- **Strict Citation Verification** — Validates every generated citation against current repository source lines to guarantee zero fabricated references or- **Multi-Provider LLM Engine**:
   - **Local Ollama** (default development): zero-cost local inference with `qwen2.5-coder:1.5b` or `qwen2.5-coder:7b`.
-  - **Google Gemini**: cloud-ready inference with `gemini-2.5-flash` or `gemini-1.5-pro`.
+  - **Google Gemini**: cloud-ready inference with `gemini-2.5-flash` or `gemini-1.5-pro` (authenticated securely via `x-goog-api-key` header with exponential backoff & jitter).
   - **OpenAI**: cloud-ready inference with `gpt-4o-mini` or `gpt-4o`.
-- **Dimension-Consistent Embedding Architecture** — Standardized 384-dimensional vector space supporting both local Sentence Transformers (`all-MiniLM-L6-v2`) and deterministic Mock embeddings.
+  - **Mock LLM**: deterministic fallback for unit testing and zero-resource environments.
+- **Sustainable Free-Tier Embedding Architecture**:
+  - **Local Sentence Transformers (`all-MiniLM-L6-v2`)**: Default 384-dimensional local embeddings with thread-safe lazy singleton loading, deterministic batching, and zero external API dependencies or token quotas.
+  - **Safe Dimension Migration**: Automatic detection and safe rebuilding of vector collections when switching models or dimensions (e.g. from 768-d Gemini to 384-d MiniLM) without data loss or collection crashes.
 - **Repository Isolation & Persistence** — Independent SQLite and ChromaDB collections per repository, preventing cross-repo data leakage.
 - **User Authentication & Session Management** — Secure user registration and login with bcrypt password hashing and JWT access tokens.
-- **Production-Ready Web Deployment** — Pre-configured for deployment on **Vercel** (frontend) and **Render** (backend) with persistent volume support.
+- **Production-Ready Web Deployment** — Pre-configured for deployment on **Vercel** (frontend) and **Render** (backend) with explicit free-tier memory and storage guidance.
 
 ---
 
@@ -61,8 +63,8 @@ RepoLens AI is a production-ready, AI-powered codebase intelligence platform tha
                      v                                |           /                  \
 +------------------------------------------+          |          v                    v
 |           Embedding Pipeline             |          |   +---------------+   +------------------+
-| - Sentence Transformers (384-d)          |          |   | Vector Search |   | Keyword / SQLite |
-|   or Fast Mock Embeddings (384-d)        |          |   |  (ChromaDB)   |   |   (Source Files) |
+| - Local all-MiniLM-L6-v2 (384-d, Free)   |          |   | Vector Search |   | Keyword / SQLite |
+|   Lazy Singleton & Thread-Safe Cache     |          |   |  (ChromaDB)   |   |   (Source Files) |
 +------------------------------------------+          |   +---------------+   +------------------+
                      |                                |           \                  /
                      v                                |            \                /
@@ -75,7 +77,7 @@ RepoLens AI is a production-ready, AI-powered codebase intelligence platform tha
                                                           +----------------------------------+
                                                           |           LLM Provider           |
                                                           | - Ollama (host.docker.internal)  |
-                                                          | - Gemini (gemini-2.5-flash)      |
+                                                          | - Gemini (x-goog-api-key header) |
                                                           | - OpenAI (gpt-4o-mini)           |
                                                           +----------------------------------+
                                                                            |
@@ -87,7 +89,7 @@ RepoLens AI is a production-ready, AI-powered codebase intelligence platform tha
                                                           +----------------------------------+
                                                                            |
                                                                            v
-                                                              Verified Stream to Frontend
+                                                               Verified Stream to Frontend
 ```
 
 ---
@@ -98,7 +100,7 @@ RepoLens AI is a production-ready, AI-powered codebase intelligence platform tha
 |---|---|
 | **Frontend** | React 18, Vite, Tailwind CSS, React Router v6, Axios, Lucide React |
 | **Backend** | Python 3.11+, FastAPI, Uvicorn, SQLAlchemy, SQLite, Pydantic, python-jose (JWT), passlib (bcrypt) |
-| **AI / RAG** | ChromaDB, Sentence Transformers (`all-MiniLM-L6-v2`), Ollama (`qwen2.5-coder:1.5b`), Google Generative AI, OpenAI SDK, Python AST |
+| **AI / RAG** | ChromaDB, Sentence Transformers (`all-MiniLM-L6-v2`), Ollama (`qwen2.5-coder:1.5b`), Google Generative AI (Gemini Flash), OpenAI SDK, Python AST |
 | **DevOps / Containers** | Docker, Docker Compose, Nginx, Vercel (Frontend), Render (Backend) |
 
 ---
@@ -110,27 +112,27 @@ RepoLens AI is a production-ready, AI-powered codebase intelligence platform tha
 | Variable | Default Value | Description |
 |---|---|---|
 | `APP_ENV` | `development` | Environment mode (`development` or `production`) |
-| `DATABASE_URL` | `sqlite:///./repolens.db` | SQLAlchemy database URL (use persistent disk path in cloud) |
+| `DATABASE_URL` | `sqlite:///./repolens.db` | SQLAlchemy database URL (ephemeral `./repolens.db` on Render free tier, or `/var/data/repolens.db` with persistent disk) |
 | `CHROMA_PERSIST_DIRECTORY` | `./chroma_data` | Directory where ChromaDB indexes are stored |
 | `SECRET_KEY` | *(dev fallback in dev)* | JWT token signing key. **Required in production** (min 16 chars). Application fails fast on startup if missing, default, or placeholder in production. |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `10080` | JWT token lifetime (7 days) |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed frontend origins. In production, **must match exact deployed frontend origin** (not `*`) when credentials are enabled. |
-| `LLM_PROVIDER` | `ollama` | Active LLM (`ollama`, `gemini`, `openai`, or `mock`) |
+| `LLM_PROVIDER` | `gemini` (or `ollama`) | Active LLM (`gemini`, `ollama`, `openai`, or `mock`) |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API endpoint (`http://localhost:11434` for bare-metal) |
 | `OLLAMA_MODEL` | `qwen2.5-coder:1.5b` | Ollama model identifier |
 | `OLLAMA_TIMEOUT` | `120.0` | Ollama HTTP request timeout in seconds |
-| `GEMINI_API_KEY` | *(optional)* | Google Gemini API key for hosted deployment |
+| `GEMINI_API_KEY` | *(optional)* | Google Gemini API key. Passed via `x-goog-api-key` header with exponential backoff & jitter. |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
 | `OPENAI_API_KEY` | *(optional)* | OpenAI API key for hosted deployment |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model name |
-| `EMBEDDING_PROVIDER` | `mock` | Embedding engine (`mock`, `local`, `openai`, `gemini`) |
-| `EMBEDDING_DIMENSION` | `384` | Embedding dimensionality (must match stored vectors) |
+| `EMBEDDING_PROVIDER` | `local` | Embedding engine (`local`, `mock`, `openai`, `gemini`). Default is `local` (free `all-MiniLM-L6-v2`, zero API quota). |
+| `EMBEDDING_DIMENSION` | `384` | Embedding dimensionality (384 for `local` and `mock`, 768 for `gemini`, 1536 for `openai`). |
 
 ### Frontend Configuration (`frontend/.env` or Vercel Environment)
 
 | Variable | Default Value | Description |
 |---|---|---|
-| `VITE_API_BASE_URL` | `/api` | Base URL of the backend API (set to Render URL in production) |
+| `VITE_API_BASE_URL` | `/api` | Base URL of the backend API (set to Render URL in production) | (set to Render URL in production) |
 
 ---
 
@@ -231,14 +233,20 @@ RepoLens AI includes a comprehensive automated test suite covering unit, integra
 ```bash
 cd backend
 
-# Run full backend test suite:
+# Run full backend test suite (150 tests):
 .\venv\Scripts\python -m pytest tests/
 
-# Run LLM provider integration tests specifically:
+# Run free-tier embeddings and safe migration tests:
+.\venv\Scripts\python -m pytest tests/test_free_tier_embeddings_and_migration.py
+
+# Run LLM provider integration tests:
 .\venv\Scripts\python -m pytest tests/test_llm_provider_integration.py
 
 # Verify Chroma vector index dimension compatibility:
 .\venv\Scripts\python reindex_repo.py --verify-dimensions
+
+# Rebuild any incompatible collections (e.g. legacy 768-d Gemini to 384-d local):
+.\venv\Scripts\python reindex_repo.py --rebuild-incompatible
 
 # Verify frontend production build:
 cd ../frontend
@@ -247,33 +255,71 @@ npm run build
 
 ---
 
-## 🚀 Production Deployment
+## 🔄 Vector Dimensions & Safe Model Migration
 
-RepoLens AI is architected for seamless cloud deployment:
+RepoLens AI stores repository embeddings in ChromaDB collections isolated per repository (`repo_{repo_id}`).
+- **Local Sentence Transformers**: Produces **384-dimensional** vectors using `all-MiniLM-L6-v2`.
+- **Legacy Gemini Embeddings**: Produces **768-dimensional** vectors using `text-embedding-004` / `gemini-embedding-001`.
+- **OpenAI Embeddings**: Produces **1536-dimensional** vectors using `text-embedding-3-small`.
+
+Mixing vectors of different dimensions within a Chroma collection causes runtime indexing crashes (`HTTP 500 / ValueError: embedding dimension mismatch`).
+
+### Safe Dimension Architecture:
+1. **Schema-Level Tracking**: The SQLite database records `embedding_model` and `embedding_dimension` on each repository record. Schema migrations are applied idempotently at startup without deleting existing user or repository data.
+2. **Dimension Verification**: Running `python reindex_repo.py --verify-dimensions` checks both the SQLite recorded dimensions and live ChromaDB vector shapes against the configured `EMBEDDING_DIMENSION`.
+3. **Safe Atomic Reindexing**: Running `python reindex_repo.py --rebuild-incompatible` recreates vector collections using existing chunks from the SQLite database with the active embedding model, using atomic temporary collection swapping so user data is never lost.
+
+---
+
+## 🚀 Cloud Deployment (Render & Vercel)
+
+RepoLens AI is configured for free-tier hosting:
 - **Frontend**: [Vercel](https://vercel.com) (Edge hosting with Vite SPA routing via `vercel.json`)
-- **Backend**: [Render](https://render.com) (FastAPI web service with persistent disk via `render.yaml`)
+- **Backend**: [Render](https://render.com) (FastAPI web service configured via `render.yaml`)
 
 For a complete step-by-step walkthrough, see [DEPLOYMENT_CHECKLIST.md](file:///DEPLOYMENT_CHECKLIST.md).
 
-### Using Hosted LLMs in Production
-Cloud instances (like Render or Vercel) cannot access local desktop Ollama instances. For production, switch to Google Gemini or OpenAI:
+### Free-Tier Hosting Realities & Trade-Offs
 
-1. **Google Gemini (Recommended for cost & speed)**:
-   ```env
-   LLM_PROVIDER=gemini
-   GEMINI_API_KEY=your_gemini_api_key_here
-   GEMINI_MODEL=gemini-2.5-flash
-   ```
-2. **OpenAI**:
-   ```env
-   LLM_PROVIDER=openai
-   OPENAI_API_KEY=your_openai_api_key_here
-   OPENAI_MODEL=gpt-4o-mini
-   ```
-3. **Zero-cost Portfolio Demonstration**:
-   ```env
-   LLM_PROVIDER=mock
-   ```
+| Resource | Local Desktop (Windows) | Render Free Tier (512MB RAM) | Render Starter ($7/mo) |
+|---|---|---|---|
+| **RAM** | Host RAM (8GB - 64GB) | **512 MB hard cap** | 512 MB - 2 GB |
+| **Embeddings** | `local` (`all-MiniLM-L6-v2`) | `local` (small repos) or `mock` | `local` or external API |
+| **Storage** | Persistent SSD | **Ephemeral** (clears on restart/sleep) | Persistent Disk (`/var/data`) |
+| **LLM Inference** | Ollama (`qwen2.5-coder`) | Cloud API (Gemini / OpenAI) | Cloud API (Gemini / OpenAI) |
+| **Cost** | **$0.00 completely free** | **$0.00 completely free** | $7+/mo |
+
+> [!IMPORTANT]
+> **Render Free Instance Ephemeral Storage**: Render's free tier spins down after 15 minutes of inactivity and restarts with a fresh container. SQLite and ChromaDB data stored in `./repolens.db` and `./chroma_data` are cleared upon container restart unless a persistent disk (paid plan) or external database (e.g. Supabase PostgreSQL) is connected.
+>
+> **Render 512MB Memory Constraint**: Loading PyTorch runtime (~250MB) + `all-MiniLM-L6-v2` (~90MB) + FastAPI and ChromaDB (~150MB) operates near the 512MB limit. To ensure stability on free Render instances:
+> - The local embedding model uses thread-safe lazy singleton loading so memory is only allocated when an ingestion job runs.
+> - Batch size is bounded to 32 items to avoid memory spikes.
+> - If deploying purely for UI/portfolio demonstration with minimal RAM usage, set `EMBEDDING_PROVIDER=mock`.
+
+---
+
+## 🔧 Troubleshooting Guide
+
+### 1. Gemini Embedding API Error (HTTP 429: RESOURCE_EXHAUSTED)
+- **Cause**: Google AI Studio free-tier Gemini Embeddings enforce a strict 30,000 TPM limit. Ingesting a large codebase exhausts this limit immediately.
+- **Solution**: Switch to free local embeddings:
+  ```env
+  EMBEDDING_PROVIDER=local
+  EMBEDDING_DIMENSION=384
+  ```
+  Local embeddings run entirely on your CPU without any external rate limits or token charges.
+
+### 2. Vector Dimension Mismatch Error
+- **Cause**: Repository was previously indexed with 768-d Gemini vectors, but the active provider is 384-d `all-MiniLM-L6-v2`.
+- **Solution**: Run the safe reindex command:
+  ```powershell
+  python reindex_repo.py --rebuild-incompatible
+  ```
+
+### 3. Model Download Issues / Offline Mode
+- **Cause**: On first run with `EMBEDDING_PROVIDER=local`, Sentence Transformers automatically downloads the `all-MiniLM-L6-v2` weights (~90MB) from Hugging Face Hub. If offline without cached weights, an informative `RuntimeError` is raised.
+- **Solution**: Ensure internet access on the first run. The model is cached locally at `~/.cache/huggingface/hub/` and subsequent runs operate completely offline.
 
 ---
 
@@ -295,6 +341,7 @@ Every response includes exact file paths and line number ranges checked against 
 
 ## ⚠️ Known Limitations
 
+- **Render Free Tier Storage**: SQLite databases and vector collections do not persist across free Render instance spin-downs.
 - **Language Support**: Deep AST structural parsing is currently optimized for Python. Other languages are indexed using line-aware text and symbol chunking.
 - **Dynamic Reflection**: Dynamically imported or runtime-evaluated dependencies cannot be parsed statically.
-- **Resource Constraints**: Local LLM speed is bounded by your machine's CPU/GPU capabilities. For 8GB RAM systems, `qwen2.5-coder:1.5b` is strongly recommended.
+- **Local LLM Speed**: Ollama inference speed depends on your host GPU/CPU. For 8GB RAM systems, `qwen2.5-coder:1.5b` is strongly recommended.

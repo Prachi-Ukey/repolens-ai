@@ -220,7 +220,11 @@ class TestLLMProviderIntegration(unittest.TestCase):
         captured_requests = []
 
         def mock_client_post(url, json=None, **kwargs):
-            captured_requests.append({"url": url, "json": json})
+            captured_requests.append({
+                "url": url,
+                "json": json,
+                "headers": kwargs.get("headers", {})
+            })
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
@@ -245,7 +249,9 @@ class TestLLMProviderIntegration(unittest.TestCase):
         self.assertEqual(len(captured_requests), 1)
         req = captured_requests[0]
         self.assertIn("v1beta/models/gemini-2.5-flash:generateContent", req["url"])
-        self.assertIn("key=secret-api-key-xyz", req["url"])
+        # API key must be in the header, never in the URL query string
+        self.assertNotIn("key=", req["url"])
+        self.assertEqual(req["headers"].get("x-goog-api-key"), "secret-api-key-xyz")
         self.assertEqual(
             req["json"]["system_instruction"]["parts"][0]["text"],
             "System prompt"

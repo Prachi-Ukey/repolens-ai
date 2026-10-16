@@ -100,9 +100,12 @@ def run_ingestion_pipeline(job_id: str, repository_id: str):
         # Stage 6: Embedding & Vector Storage
         update_job_status(db, job, "embedding", 90, "Generating embeddings and indexing in ChromaDB...")
         vector_store = get_vector_store()
-        # Safe rebuild: Delete existing collection for this repo to purge stale/ignored chunks
-        vector_store.delete_collection(repo.id)
-        vector_store.upsert_chunks(repo.id, chunks)
+        # Safe replacement: Staging and validation before replacing collection
+        success = vector_store.safe_replace_collection(repo.id, chunks)
+        if not success:
+            raise RuntimeError(f"Failed to generate embeddings and index vector collection for repository {repo.name}.")
+        repo.embedding_model = getattr(vector_store, "embedding_model_name", getattr(vector_store.embedding_provider, "model_name", "all-MiniLM-L6-v2"))
+        repo.embedding_dimension = getattr(vector_store, "embedding_dimension", getattr(vector_store.embedding_provider, "dimension", 384))
 
         # Generate overview summary
         summary = {
@@ -236,12 +239,14 @@ def reindex_existing_repository(repository_id: str) -> Dict[str, Any]:
 
         # 5. Safely rebuild Chroma collection for this specific repository ONLY
         vector_store = get_vector_store()
-        logger.info(f"Deleting stale Chroma collection for repository {repo.id}...")
-        vector_store.delete_collection(repo.id)
-        logger.info(f"Upserting {len(all_chunks)} fresh chunks to Chroma collection for repository {repo.id}...")
-        vector_store.upsert_chunks(repo.id, all_chunks)
+        logger.info(f"Safely replacing Chroma collection for repository {repo.id} with {len(all_chunks)} chunks...")
+        success = vector_store.safe_replace_collection(repo.id, all_chunks)
+        if not success:
+            raise RuntimeError(f"Failed to safely reindex Chroma collection for repository '{repo.id}'.")
 
-        # 6. Update repository stats
+        # 6. Update repository stats and embedding metadata
+        repo.embedding_model = getattr(vector_store, "embedding_model_name", getattr(vector_store.embedding_provider, "model_name", "all-MiniLM-L6-v2"))
+        repo.embedding_dimension = getattr(vector_store, "embedding_dimension", getattr(vector_store.embedding_provider, "dimension", 384))
         repo.file_count = len(valid_files)
         repo.chunk_count = len(all_chunks)
         db.commit()

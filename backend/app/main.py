@@ -74,12 +74,15 @@ def root():
 @app.get("/health", tags=["Status"])
 def health():
     active_model = settings.OLLAMA_MODEL if settings.LLM_PROVIDER == "ollama" else getattr(settings, f"{settings.LLM_PROVIDER.upper()}_MODEL", "default")
+    from app.ai.embeddings import get_active_embedding_model_name
     return {
         "status": "ok",
         "app": settings.APP_NAME,
         "env": settings.APP_ENV,
         "llm_provider": settings.LLM_PROVIDER,
         "embedding_provider": settings.EMBEDDING_PROVIDER,
+        "embedding_dimension": getattr(settings, "EMBEDDING_DIMENSION", 384),
+        "embedding_model": get_active_embedding_model_name(),
         "model": active_model
     }
 

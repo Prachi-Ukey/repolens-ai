@@ -36,12 +36,16 @@ Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Default configuration uses SQLite database and Mock AI/Embedding providers for zero-config offline execution.
-To use OpenAI or Gemini, update:
+Default configuration uses SQLite database and local sentence-transformers (`all-MiniLM-L6-v2`, 384 dimensions) for completely free, quota-free vector search:
 ```env
-LLM_PROVIDER=openai # or gemini
-OPENAI_API_KEY=sk-...
-EMBEDDING_PROVIDER=openai
+EMBEDDING_PROVIDER=local
+EMBEDDING_DIMENSION=384
+```
+To use cloud LLMs (e.g. Gemini Flash) for chat responses, set:
+```env
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 5. Start backend development server:

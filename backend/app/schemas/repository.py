@@ -15,6 +15,8 @@ class RepositoryResponse(BaseModel):
     primary_language: str
     file_count: int
     chunk_count: int
+    embedding_model: Optional[str] = "all-MiniLM-L6-v2"
+    embedding_dimension: Optional[int] = 384
     status: str
     description: Optional[str] = None
     summary_json: Optional[str] = None

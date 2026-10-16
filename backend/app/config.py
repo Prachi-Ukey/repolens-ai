@@ -54,8 +54,12 @@ class Settings(BaseSettings):
 
     # AI Configuration
     LLM_PROVIDER: str = "ollama"  # mock, ollama, openai, gemini
-    EMBEDDING_PROVIDER: str = "mock"  # mock, local, openai, gemini
+    EMBEDDING_PROVIDER: str = "local"  # mock, local, openai, gemini
     EMBEDDING_DIMENSION: int = 384
+    LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    MOCK_EMBEDDING_MODEL: Optional[str] = None
     OLLAMA_MODEL: str = "qwen2.5-coder:1.5b"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OPENAI_API_KEY: Optional[str] = None
