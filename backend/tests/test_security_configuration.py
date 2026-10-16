@@ -191,6 +191,18 @@ class TestProductionAIProviderConfiguration:
                 OPENAI_API_KEY=None,
             )
 
+    @pytest.mark.parametrize("blank_openai_key", [None, "", "   "])
+    def test_production_fails_fast_when_openai_llm_key_missing_or_blank_with_gemini_embeddings(self, blank_openai_key):
+        with pytest.raises(ValueError, match="OPENAI_API_KEY must be configured when LLM_PROVIDER='openai'"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                LLM_PROVIDER="openai",
+                OPENAI_API_KEY=blank_openai_key,
+                EMBEDDING_PROVIDER="gemini",
+                GEMINI_API_KEY="test-valid-gemini-key",
+            )
+
     def test_get_embedding_provider_fails_fast_when_key_missing_in_production(self, monkeypatch):
         from app.ai.embeddings import get_embedding_provider
         import app.config as config_mod
@@ -224,3 +236,84 @@ class TestProductionAIProviderConfiguration:
         assert s.EMBEDDING_DIMENSION == 768
         assert s.LLM_PROVIDER == "gemini"
         assert s.GEMINI_API_KEY == "test-valid-gemini-api-key"
+
+    def test_env_vars_override_default_embedding_provider_and_dimension(self, monkeypatch):
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("SECRET_KEY", "strong-valid-secret-key-123456")
+        monkeypatch.setenv("EMBEDDING_PROVIDER", "gemini")
+        monkeypatch.setenv("EMBEDDING_DIMENSION", "768")
+        monkeypatch.setenv("GEMINI_API_KEY", "test-env-gemini-key")
+        monkeypatch.setenv("LLM_PROVIDER", "gemini")
+
+        s = Settings()
+        assert s.APP_ENV == "production"
+        assert s.EMBEDDING_PROVIDER == "gemini"
+        assert s.EMBEDDING_DIMENSION == 768
+
+    def test_production_explicit_gemini_settings_respected(self):
+        s = Settings(
+            APP_ENV="production",
+            SECRET_KEY="strong-valid-secret-key-123456",
+            EMBEDDING_PROVIDER="gemini",
+            EMBEDDING_DIMENSION=768,
+            LLM_PROVIDER="gemini",
+            GEMINI_API_KEY="test-valid-gemini-api-key",
+            GEMINI_MODEL="gemini-2.5-flash",
+        )
+        assert s.APP_ENV == "production"
+        assert s.EMBEDDING_PROVIDER == "gemini"
+        assert s.EMBEDDING_DIMENSION == 768
+        assert s.GEMINI_API_KEY == "test-valid-gemini-api-key"
+
+    def test_production_gemini_requires_gemini_api_key(self):
+        with pytest.raises(ValueError, match="GEMINI_API_KEY must be configured"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                EMBEDDING_PROVIDER="gemini",
+                EMBEDDING_DIMENSION=768,
+                LLM_PROVIDER="gemini",
+                GEMINI_API_KEY=None,
+            )
+
+    def test_production_local_provider_fails_fast_without_silent_switching_even_if_api_key_present(self, monkeypatch):
+        """Ensure no automatic/silent provider switching from local to gemini occurs based on API key presence."""
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "sentence_transformers":
+                raise ImportError("No module named 'sentence_transformers'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        with pytest.raises(ValueError, match="sentence-transformers is not installed"):
+            Settings(
+                APP_ENV="production",
+                SECRET_KEY="strong-valid-secret-key-123456",
+                EMBEDDING_PROVIDER="local",
+                LLM_PROVIDER="gemini",
+                GEMINI_API_KEY="test-key-present-but-must-not-silently-switch",
+            )
+
+    def test_environment_variable_casing_and_quoting_normalization(self, monkeypatch):
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("SECRET_KEY", "strong-valid-secret-key-123456")
+        monkeypatch.setenv("EMBEDDING_PROVIDER", ' "GEMINI" ')
+        monkeypatch.setenv("EMBEDDING_DIMENSION", ' "768" ')
+        monkeypatch.setenv("GEMINI_API_KEY", ' "test-quoted-gemini-key" ')
+        monkeypatch.setenv("LLM_PROVIDER", ' "GEMINI" ')
+
+        s = Settings()
+        assert s.APP_ENV == "production"
+        assert s.EMBEDDING_PROVIDER == "gemini"
+        assert s.EMBEDDING_DIMENSION == 768
+        assert s.GEMINI_API_KEY == "test-quoted-gemini-key"
+        assert s.LLM_PROVIDER == "gemini"
+
+    def test_development_preserves_local_embedding_defaults(self):
+        s = Settings(APP_ENV="development")
+        assert s.APP_ENV == "development"
+        assert s.EMBEDDING_PROVIDER == "local"
+        assert s.EMBEDDING_DIMENSION == 384

@@ -36,7 +36,13 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    logger.info(f"Starting {settings.APP_NAME} in [{settings.APP_ENV}] mode...")
+    from app.ai.embeddings import get_active_embedding_model_name
+    logger.info(
+        f"Starting {settings.APP_NAME} in [{settings.APP_ENV}] mode (diagnostic: "
+        f"APP_ENV={settings.APP_ENV}, EMBEDDING_PROVIDER={settings.EMBEDDING_PROVIDER}, "
+        f"EMBEDDING_DIMENSION={settings.EMBEDDING_DIMENSION}, "
+        f"EMBEDDING_MODEL={get_active_embedding_model_name()})..."
+    )
     if str(settings.APP_ENV).strip().lower() == "production":
         if not settings.CORS_ORIGINS or settings.CORS_ORIGINS.strip() == "*":
             logger.warning(
@@ -74,15 +80,50 @@ def root():
 @app.get("/health", tags=["Status"])
 def health():
     active_model = settings.OLLAMA_MODEL if settings.LLM_PROVIDER == "ollama" else getattr(settings, f"{settings.LLM_PROVIDER.upper()}_MODEL", "default")
-    from app.ai.embeddings import get_active_embedding_model_name
+    from app.ai.embeddings import get_embedding_provider, get_active_embedding_model_name
+
+    configured_provider = str(settings.EMBEDDING_PROVIDER).strip().lower()
+
+    try:
+        provider_instance = get_embedding_provider()
+        actual_provider = (
+            "gemini" if type(provider_instance).__name__ == "GeminiEmbedding"
+            else "openai" if type(provider_instance).__name__ == "OpenAIEmbedding"
+            else "local" if type(provider_instance).__name__ == "LocalEmbedding"
+            else "mock" if type(provider_instance).__name__ == "MockEmbedding"
+            else configured_provider
+        )
+        actual_dimension = provider_instance.dimension
+        actual_model = provider_instance.model_name
+    except Exception as exc:
+        logger.error(f"Failed to load active embedding provider in health check: {exc}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "app": settings.APP_NAME,
+                "env": settings.APP_ENV,
+                "llm_provider": settings.LLM_PROVIDER,
+                "embedding_provider": None,
+                "configured_embedding_provider": configured_provider,
+                "resolved_embedding_provider": None,
+                "embedding_dimension": getattr(settings, "EMBEDDING_DIMENSION", None),
+                "embedding_model": None,
+                "model": active_model,
+                "error": "Failed to initialize configured embedding provider",
+            },
+        )
+
     return {
         "status": "ok",
         "app": settings.APP_NAME,
         "env": settings.APP_ENV,
         "llm_provider": settings.LLM_PROVIDER,
-        "embedding_provider": settings.EMBEDDING_PROVIDER,
-        "embedding_dimension": getattr(settings, "EMBEDDING_DIMENSION", 384),
-        "embedding_model": get_active_embedding_model_name(),
+        "embedding_provider": actual_provider,
+        "configured_embedding_provider": configured_provider,
+        "resolved_embedding_provider": actual_provider,
+        "embedding_dimension": actual_dimension,
+        "embedding_model": actual_model,
         "model": active_model
     }
 

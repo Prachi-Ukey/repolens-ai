@@ -418,6 +418,13 @@ def get_embedding_provider() -> EmbeddingProvider:
     )
 
     if provider == "local":
+        if is_production and SentenceTransformer is None:
+            raise RuntimeError(
+                "Production embedding configuration error: "
+                "EMBEDDING_PROVIDER is 'local', but sentence-transformers is not installed. "
+                "Configure EMBEDDING_PROVIDER='gemini' with GEMINI_API_KEY in production."
+            )
+
         model_name = (
             getattr(settings, "LOCAL_EMBEDDING_MODEL", None)
             or getattr(settings, "SENTENCE_TRANSFORMERS_MODEL", None)
