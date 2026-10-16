@@ -29,8 +29,10 @@ from app.models.chunk import CodeChunk
 from app.ai.embeddings import (
     LocalEmbedding,
     GeminiEmbedding,
+    OpenAIEmbedding,
     MockEmbedding,
     get_embedding_provider,
+    get_active_embedding_model_name,
     _cached_local_model,
 )
 from app.ai.llm import GeminiLLM, get_llm_provider
@@ -305,3 +307,74 @@ class TestProductionFreeConfigValidation:
                 EMBEDDING_PROVIDER="gemini",
                 GEMINI_API_KEY=None,
             )
+
+
+class TestGeminiProviderAndOperationWithoutSentenceTransformers:
+    """Verify Gemini provider selection, dimension, OpenAI signature, and execution without SentenceTransformers."""
+
+    def test_gemini_provider_selection_and_dimensions(self, monkeypatch):
+        from app.config import settings
+        import app.ai.embeddings as emb_mod
+
+        monkeypatch.setattr(settings, "APP_ENV", "production")
+        monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
+        monkeypatch.setattr(settings, "EMBEDDING_DIMENSION", 768)
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-gemini-key")
+        monkeypatch.setattr(settings, "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+
+        provider = get_embedding_provider()
+        assert isinstance(provider, GeminiEmbedding)
+        assert provider.dimension == 768
+        assert provider.model_name == "gemini-embedding-001"
+        assert emb_mod.get_active_embedding_model_name() == "gemini-embedding-001"
+
+    def test_gemini_provider_enforces_768_dimension_even_if_misconfigured(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "APP_ENV", "production")
+        monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
+        monkeypatch.setattr(settings, "EMBEDDING_DIMENSION", 384)
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-gemini-key")
+
+        provider = get_embedding_provider()
+        assert isinstance(provider, GeminiEmbedding)
+        assert provider.dimension == 768
+
+    def test_gemini_and_openai_operate_when_sentence_transformers_missing(self, monkeypatch):
+        """Confirm that when SentenceTransformer is None, Gemini and OpenAI work without PyTorch."""
+        from app.config import settings
+        import app.ai.embeddings as emb_mod
+
+        monkeypatch.setattr(emb_mod, "SentenceTransformer", None)
+
+        # Gemini succeeds without sentence-transformers
+        monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
+        monkeypatch.setattr(settings, "EMBEDDING_DIMENSION", 768)
+        monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-gemini-key")
+        gemini_provider = get_embedding_provider()
+        assert isinstance(gemini_provider, GeminiEmbedding)
+        assert gemini_provider.dimension == 768
+
+        # OpenAI succeeds and constructor receives model kwarg without TypeError
+        monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "openai")
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-openai-key")
+        monkeypatch.setattr(settings, "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        openai_provider = get_embedding_provider()
+        assert isinstance(openai_provider, OpenAIEmbedding)
+        assert openai_provider.dimension == 1536
+        assert openai_provider.model_name == "text-embedding-3-small"
+
+        # Local raises actionable RuntimeError explaining package is not installed
+        local_emb = LocalEmbedding()
+        emb_mod._cached_local_model = None
+        with pytest.raises(RuntimeError, match="sentence-transformers package is not installed"):
+            local_emb._load_model()
+
+    def test_openai_embedding_constructor_accepts_model_and_dimension(self):
+        openai_emb = OpenAIEmbedding(
+            api_key="test-key",
+            model="text-embedding-3-large",
+            dimension=3072,
+        )
+        assert openai_emb.model_name == "text-embedding-3-large"
+        assert openai_emb.dimension == 3072

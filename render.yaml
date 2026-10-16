@@ -3,7 +3,7 @@ services:
     name: repolens-backend
     runtime: python
     rootDir: backend
-    buildCommand: pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu && pip install --no-cache-dir -r requirements.txt
+    buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     plan: free
     envVars:
@@ -36,13 +36,12 @@ services:
         value: gpt-4o-mini
       - key: OPENAI_API_KEY
         sync: false
-      # Free Local Embedding Provider (all-MiniLM-L6-v2, 384 dimensions)
-      # Eliminates Gemini free-tier 30K TPM rate limit (HTTP 429: RESOURCE_EXHAUSTED).
-      # Completely free: no paid tokens or external API dependencies for vector embeddings.
+      # Hosted Gemini Embedding Provider (gemini-embedding-001, 768 dimensions)
+      # Uses external Gemini API, completely eliminating in-memory PyTorch/SentenceTransformers footprint on 512 MB free tier.
       - key: EMBEDDING_PROVIDER
-        value: local
+        value: gemini
       - key: EMBEDDING_DIMENSION
-        value: 384
+        value: 768
       # Exact deployed frontend URL (e.g. https://repolens-ai.vercel.app); set in Render Dashboard
       - key: CORS_ORIGINS
         sync: false

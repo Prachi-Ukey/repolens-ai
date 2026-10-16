@@ -186,10 +186,15 @@ class LocalEmbedding(EmbeddingProvider):
 
 
 class OpenAIEmbedding(EmbeddingProvider):
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "text-embedding-3-small",
+        dimension: int = 1536,
+    ):
         self.api_key = api_key
-        self._model = "text-embedding-3-small"
-        self._dim = 1536
+        self._model = model
+        self._dim = dimension
 
     @property
     def dimension(self) -> int:
@@ -390,7 +395,6 @@ def get_active_embedding_model_name() -> str:
     elif provider_type == "gemini":
         return (
             getattr(settings, "GEMINI_EMBEDDING_MODEL", None)
-            or getattr(settings, "GEMINI_MODEL", None)
             or "gemini-embedding-001"
         )
     elif provider_type == "openai":
@@ -487,4 +491,3 @@ def get_embedding_provider() -> EmbeddingProvider:
         dim=settings.EMBEDDING_DIMENSION,
         model_name=getattr(settings, "MOCK_EMBEDDING_MODEL", None),
     )
-

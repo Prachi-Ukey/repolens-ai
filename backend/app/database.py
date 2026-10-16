@@ -98,4 +98,3 @@ def init_db():
                 os.makedirs(dir_name, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     _run_schema_migrations(engine)
-
