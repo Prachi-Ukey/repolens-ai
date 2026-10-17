@@ -147,12 +147,12 @@ def get_node_level(category: str, label: str) -> int:
     return 4
 
 def generate_architecture_graph(repo_id: str, db: Session) -> Dict[str, Any]:
-    from app.ai.vector_store import ChromaManager
+    from app.ai.vector_store import get_vector_store
     import os
     import re
     from collections import defaultdict
     
-    chroma_mgr = ChromaManager()
+    chroma_mgr = get_vector_store()
     collection = chroma_mgr.get_or_create_collection(repo_id)
     result = collection.get(include=["metadatas"])
     metadatas = result.get("metadatas", [])

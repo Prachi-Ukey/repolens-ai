@@ -99,6 +99,7 @@ def health():
         actual_provider = (
             "gemini" if type(provider_instance).__name__ == "GeminiEmbedding"
             else "openai" if type(provider_instance).__name__ == "OpenAIEmbedding"
+            else "onnx_local" if type(provider_instance).__name__ in ("ONNXEmbedding", "ONNXLocalEmbedding")
             else "local" if type(provider_instance).__name__ == "LocalEmbedding"
             else "mock" if type(provider_instance).__name__ == "MockEmbedding"
             else configured_provider

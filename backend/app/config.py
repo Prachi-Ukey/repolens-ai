@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    ONNX_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2-qint8"
+    ONNX_MODEL_DIR: Optional[str] = None
     MOCK_EMBEDDING_MODEL: Optional[str] = None
     OLLAMA_MODEL: str = "qwen2.5-coder:1.5b"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -128,6 +130,8 @@ class Settings(BaseSettings):
         # When Gemini is configured, always ensure 768 dimensions
         if self.EMBEDDING_PROVIDER == "gemini":
             self.EMBEDDING_DIMENSION = 768
+        elif self.EMBEDDING_PROVIDER in ("onnx_local", "onnx"):
+            self.EMBEDDING_DIMENSION = 384
 
         is_production = self.APP_ENV == "production"
         current_secret = self.SECRET_KEY or ""
@@ -180,10 +184,25 @@ class Settings(BaseSettings):
                         "OPENAI_API_KEY must be configured when EMBEDDING_PROVIDER='openai'. "
                         "Found missing or empty API key. Please supply OPENAI_API_KEY in your environment variables."
                     )
+            elif emb_provider in ("onnx_local", "onnx"):
+                has_ort = False
+                try:
+                    import onnxruntime
+                    import tokenizers
+                    has_ort = True
+                except ImportError:
+                    has_ort = False
+
+                if not has_ort:
+                    raise ValueError(
+                        "Production configuration error: In production (APP_ENV=production), "
+                        f"EMBEDDING_PROVIDER is '{emb_provider}', but onnxruntime and tokenizers are not installed. "
+                        "Install onnxruntime and tokenizers via `pip install onnxruntime tokenizers`."
+                    )
             elif emb_provider not in ("mock",):
                 raise ValueError(
                     f"Production configuration error: Unsupported EMBEDDING_PROVIDER '{emb_provider}' in production. "
-                    "Allowed production providers: 'gemini', 'openai', 'local'."
+                    "Allowed production providers: 'gemini', 'openai', 'local', 'onnx_local', 'onnx'."
                 )
 
             llm_prov = self.LLM_PROVIDER

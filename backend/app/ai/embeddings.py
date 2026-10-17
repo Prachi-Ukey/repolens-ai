@@ -240,6 +240,225 @@ class LocalEmbedding(EmbeddingProvider):
             raise RuntimeError(f"Local query embedding generation failed for model '{self._model_name}': {exc}") from exc
 
 
+_cached_onnx_session = None
+_cached_onnx_tokenizer = None
+_onnx_model_lock = threading.Lock()
+
+
+class ONNXLocalEmbedding(EmbeddingProvider):
+    """
+    Lightweight, CPU-only semantic embeddings using ONNX Runtime with quantized all-MiniLM-L6-v2.
+    Designed for memory-constrained environments (e.g., 512 MB containers).
+    Guarantees zero PyTorch or sentence-transformers imports in its runtime path.
+    """
+
+    MODEL_URL = "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx"
+    TOKENIZER_URL = "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
+
+    def __init__(
+        self,
+        model_name: str = "all-MiniLM-L6-v2-qint8",
+        model_dir: Optional[str] = None,
+        batch_size: Optional[int] = None,
+        max_length: int = 256,
+    ):
+        self._model_name = model_name
+        self._model_dir = model_dir
+        self._dim = 384
+        self._max_length = max_length
+
+        if batch_size is None or not (isinstance(batch_size, int) and batch_size > 0):
+            raw_batch = os.environ.get("ONNX_EMBEDDING_BATCH_SIZE") or os.environ.get("EMBEDDING_BATCH_SIZE")
+            safe_batch = 4
+            if raw_batch is not None:
+                try:
+                    parsed = int(str(raw_batch).strip())
+                    if parsed > 0:
+                        safe_batch = parsed
+                except (ValueError, TypeError):
+                    pass
+            batch_size = safe_batch
+        self._batch_size = batch_size
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def _resolve_model_paths(self) -> tuple[str, str]:
+        import urllib.request
+
+        candidate_dirs = []
+        if self._model_dir:
+            candidate_dirs.append(self._model_dir)
+        setting_dir = getattr(settings, "ONNX_MODEL_DIR", None)
+        if setting_dir:
+            candidate_dirs.append(setting_dir)
+        env_dir = os.environ.get("ONNX_MODEL_DIR")
+        if env_dir:
+            candidate_dirs.append(env_dir)
+
+        cache_dir = os.path.expanduser("~/.cache/repolens/all-MiniLM-L6-v2-onnx")
+        candidate_dirs.append(cache_dir)
+
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_models_dir = os.path.join(backend_dir, "models", "all-MiniLM-L6-v2-onnx")
+        candidate_dirs.append(project_models_dir)
+
+        for cdir in candidate_dirs:
+            m_path = os.path.join(cdir, "model_quantized.onnx")
+            if not os.path.exists(m_path):
+                m_path = os.path.join(cdir, "model.onnx")
+            t_path = os.path.join(cdir, "tokenizer.json")
+            if os.path.exists(m_path) and os.path.exists(t_path):
+                return m_path, t_path
+
+        os.makedirs(cache_dir, exist_ok=True)
+        m_dest = os.path.join(cache_dir, "model_quantized.onnx")
+        t_dest = os.path.join(cache_dir, "tokenizer.json")
+
+        def _download_file(url: str, dest: str, label: str):
+            if not os.path.exists(dest):
+                logger.info("Downloading lightweight ONNX asset %s from %s...", label, url)
+                tmp_dest = f"{dest}.tmp"
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "RepoLensAI"})
+                    with urllib.request.urlopen(req, timeout=60.0) as resp, open(tmp_dest, "wb") as f:
+                        f.write(resp.read())
+                    os.replace(tmp_dest, dest)
+                    logger.info("Successfully cached %s (%.2f MB).", label, os.path.getsize(dest) / (1024 * 1024))
+                except Exception as dl_err:
+                    if os.path.exists(tmp_dest):
+                        try:
+                            os.remove(tmp_dest)
+                        except Exception:
+                            pass
+                    raise RuntimeError(
+                        f"Failed to download ONNX embedding asset '{label}' from {url}: {dl_err}. "
+                        "Pre-place 'model_quantized.onnx' and 'tokenizer.json' in ~/.cache/repolens/all-MiniLM-L6-v2-onnx/ "
+                        "or specify ONNX_MODEL_DIR."
+                    ) from dl_err
+
+        _download_file(self.TOKENIZER_URL, t_dest, "tokenizer.json")
+        _download_file(self.MODEL_URL, m_dest, "model_quantized.onnx")
+
+        return m_dest, t_dest
+
+    def _load_model(self):
+        global _cached_onnx_session, _cached_onnx_tokenizer
+        if _cached_onnx_session is not None and _cached_onnx_tokenizer is not None:
+            return _cached_onnx_session, _cached_onnx_tokenizer
+
+        with _onnx_model_lock:
+            if _cached_onnx_session is not None and _cached_onnx_tokenizer is not None:
+                return _cached_onnx_session, _cached_onnx_tokenizer
+
+            try:
+                import onnxruntime as ort
+                from tokenizers import Tokenizer
+            except ImportError as imp_err:
+                raise RuntimeError(
+                    "onnxruntime and tokenizers packages are required for ONNX embeddings. "
+                    "Install via `pip install onnxruntime tokenizers`."
+                ) from imp_err
+
+            model_path, tokenizer_path = self._resolve_model_paths()
+
+            logger.info("Initializing ONNX embedding session from: %s", model_path)
+            sess_options = ort.SessionOptions()
+            sess_options.intra_op_num_threads = 1
+            sess_options.inter_op_num_threads = 1
+            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+            try:
+                _cached_onnx_session = ort.InferenceSession(
+                    model_path,
+                    sess_options,
+                    providers=["CPUExecutionProvider"],
+                )
+                tok = Tokenizer.from_file(tokenizer_path)
+                tok.enable_truncation(max_length=self._max_length)
+                tok.enable_padding(pad_to_multiple_of=8, pad_id=0, pad_token="[PAD]")
+                _cached_onnx_tokenizer = tok
+                logger.info("ONNX embedding session and tokenizer initialized successfully (384-d).")
+            except Exception as load_err:
+                logger.error("Failed to initialize ONNX embedding session: %s", load_err, exc_info=True)
+                raise RuntimeError(f"Failed to load ONNX embedding model from '{model_path}': {load_err}") from load_err
+
+            return _cached_onnx_session, _cached_onnx_tokenizer
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+
+        session, tokenizer = self._load_model()
+        all_embeddings: List[List[float]] = []
+
+        try:
+            for start in range(0, len(texts), self._batch_size):
+                batch_slice = texts[start : start + self._batch_size]
+                clean_texts = [str(t) if (t is not None and str(t).strip()) else " " for t in batch_slice]
+
+                encoded = tokenizer.encode_batch(clean_texts)
+                input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+                attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+                token_type_ids = np.array([e.type_ids for e in encoded], dtype=np.int64)
+
+                feed = {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                }
+                input_names = [inp.name for inp in session.get_inputs()]
+                if "token_type_ids" in input_names:
+                    feed["token_type_ids"] = token_type_ids
+
+                outputs = session.run(None, feed)
+                last_hidden = outputs[0]  # Shape: (batch, seq_len, 384)
+
+                # Mean pooling over attention mask
+                mask_expanded = np.broadcast_to(
+                    np.expand_dims(attention_mask, -1), last_hidden.shape
+                ).astype(float)
+                sum_embs = np.sum(last_hidden * mask_expanded, axis=1)
+                sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=1e-9, a_max=None)
+                pooled = sum_embs / sum_mask
+
+                # L2 normalize
+                norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+                norms = np.clip(norms, a_min=1e-12, a_max=None)
+                batch_embeddings = (pooled / norms).tolist()
+
+                for emb in batch_embeddings:
+                    if len(emb) != self._dim:
+                        raise ValueError(
+                            f"ONNX embedding dimension mismatch: expected {self._dim}, got {len(emb)}"
+                        )
+
+                all_embeddings.extend(batch_embeddings)
+
+                del clean_texts, encoded, input_ids, attention_mask, token_type_ids, feed, outputs, last_hidden, mask_expanded, sum_embs, sum_mask, pooled, norms, batch_embeddings
+        except Exception as exc:
+            logger.error("ONNX embedding document inference error: %s", exc, exc_info=True)
+            raise RuntimeError(f"ONNX embedding generation failed: {exc}") from exc
+
+        return all_embeddings
+
+    def embed_query(self, text: str) -> List[float]:
+        if not text or not str(text).strip():
+            return [0.0] * self._dim
+        results = self.embed_documents([str(text)])
+        if not results:
+            return [0.0] * self._dim
+        return results[0]
+
+
+ONNXEmbedding = ONNXLocalEmbedding
+
+
 class OpenAIEmbedding(EmbeddingProvider):
     def __init__(
         self,
@@ -457,6 +676,11 @@ def get_active_embedding_model_name() -> str:
             getattr(settings, "OPENAI_EMBEDDING_MODEL", None)
             or "text-embedding-3-small"
         )
+    elif provider_type in ("onnx_local", "onnx"):
+        return (
+            getattr(settings, "ONNX_EMBEDDING_MODEL", None)
+            or "all-MiniLM-L6-v2-qint8"
+        )
     elif provider_type == "mock":
         dim = getattr(settings, "EMBEDDING_DIMENSION", 384)
         return getattr(settings, "MOCK_EMBEDDING_MODEL", None) or f"mock-embedding-{dim}d"
@@ -535,6 +759,31 @@ def get_embedding_provider() -> EmbeddingProvider:
             model=model_name,
             dimension=dimension,
         )
+
+    if provider in ("onnx_local", "onnx"):
+        model_name = (
+            getattr(settings, "ONNX_EMBEDDING_MODEL", None)
+            or "all-MiniLM-L6-v2-qint8"
+        )
+        model_dir = getattr(settings, "ONNX_MODEL_DIR", None)
+        try:
+            return ONNXLocalEmbedding(model_name=model_name, model_dir=model_dir)
+        except Exception as exc:
+            if is_production:
+                raise RuntimeError(
+                    "Production embedding configuration error: "
+                    f"ONNXLocalEmbedding failed to initialize: {exc}."
+                ) from exc
+            logger.warning(
+                "Failed to load ONNXLocalEmbedding: %s. "
+                "Falling back to MockEmbedding (dim=%s).",
+                exc,
+                settings.EMBEDDING_DIMENSION,
+            )
+            return MockEmbedding(
+                dim=settings.EMBEDDING_DIMENSION,
+                model_name=f"mock-fallback-{settings.EMBEDDING_DIMENSION}d",
+            )
 
     if provider != "mock":
         if is_production:
