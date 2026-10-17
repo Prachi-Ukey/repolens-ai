@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger("repolens.github.client")
 
 GITHUB_URL_REGEX = re.compile(
-    r"^https?://(?:www\.)?github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+?)(?:\.git|/)?$"
+    r"^https?://(?:www\.)?github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+?)(?:\.git)?(?:/.*)?$"
 )
 
 def validate_github_url(url: str) -> bool:
@@ -16,11 +16,18 @@ def validate_github_url(url: str) -> bool:
     return bool(GITHUB_URL_REGEX.match(url.strip()))
 
 def parse_github_url(url: str) -> Tuple[str, str]:
+    if not url or not isinstance(url, str):
+        raise ValueError("Invalid GitHub repository URL: empty or missing")
     match = GITHUB_URL_REGEX.match(url.strip())
     if not match:
         raise ValueError(f"Invalid GitHub repository URL: '{url}'")
     owner, repo = match.groups()
-    return owner, repo
+    repo_clean = repo.removesuffix(".git")
+    return owner, repo_clean
+
+def normalize_github_url(url: str) -> str:
+    owner, repo = parse_github_url(url)
+    return f"https://github.com/{owner}/{repo}"
 
 async def get_github_repo_metadata(owner: str, repo: str) -> Dict[str, Any]:
     api_url = f"https://api.github.com/repos/{owner}/{repo}"

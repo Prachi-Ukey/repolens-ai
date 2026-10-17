@@ -4,6 +4,7 @@ from datetime import datetime
 
 class RepositoryCreate(BaseModel):
     url: str
+    reanalyze: Optional[bool] = False
 
 class RepositoryResponse(BaseModel):
     id: str

@@ -76,6 +76,10 @@ def run_ingestion_pipeline(job_id: str, repository_id: str):
             db.flush() # Get file_obj.id
             file_obj_map[f_data["file_path"]] = file_obj.id
 
+        # Immediately persist accurate file count to repository record
+        repo.file_count = len(discovered_files)
+        db.commit()
+
         # Stage 5: Chunking
         update_job_status(db, job, "chunking", 80, f"Created {len(chunks)} code chunks...")
         chunk_objs = []
@@ -96,6 +100,31 @@ def run_ingestion_pipeline(job_id: str, repository_id: str):
                 )
                 chunk_objs.append(chunk_obj)
         db.bulk_save_objects(chunk_objs)
+        # Immediately persist accurate chunk count to repository record
+        repo.chunk_count = len(chunks)
+        db.commit()
+
+        # Handle empty repository or repository with zero indexable chunks safely
+        if len(chunks) == 0:
+            vector_store = get_vector_store()
+            try:
+                vector_store.delete_collection(repo.id)
+            except Exception:
+                pass
+            repo.embedding_model = getattr(vector_store, "embedding_model_name", getattr(vector_store.embedding_provider, "model_name", "all-MiniLM-L6-v2"))
+            repo.embedding_dimension = getattr(vector_store, "embedding_dimension", getattr(vector_store.embedding_provider, "dimension", 384))
+            summary = {
+                "overview": f"Repository {owner}/{name} contains {len(discovered_files)} files and 0 indexable code chunks.",
+                "primary_language": repo.primary_language,
+                "total_files": len(discovered_files),
+                "total_chunks": 0,
+                "top_files": [f["file_path"] for f in discovered_files[:10]]
+            }
+            repo.summary_json = json.dumps(summary)
+            repo.status = "completed"
+            update_job_status(db, job, "completed", 100, "Analysis complete. (No indexable code chunks found)", status="completed")
+            db.commit()
+            return
 
         # Stage 6: Embedding & Vector Storage
         update_job_status(db, job, "embedding", 90, "Generating embeddings and indexing in ChromaDB...")
@@ -125,14 +154,23 @@ def run_ingestion_pipeline(job_id: str, repository_id: str):
 
     except Exception as e:
         logger.error(f"Ingestion pipeline error: {e}", exc_info=True)
-        if 'db' in locals() and 'job' in locals() and job:
-            job.status = "failed"
-            job.error_details = str(e)
-            job.message = f"Analysis failed: {str(e)}"
-            db.commit()
-        if 'repo' in locals() and repo:
-            repo.status = "failed"
-            db.commit()
+        if 'db' in locals():
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                j = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+                if j:
+                    j.status = "failed"
+                    j.error_details = str(e)
+                    j.message = f"Analysis failed: {str(e)}"
+                r = db.query(Repository).filter(Repository.id == repository_id).first()
+                if r:
+                    r.status = "failed"
+                db.commit()
+            except Exception as commit_err:
+                logger.error(f"Failed to record failure status in db: {commit_err}")
     finally:
         if temp_dir:
             cleanup_repository_dir(temp_dir)
@@ -239,6 +277,24 @@ def reindex_existing_repository(repository_id: str) -> Dict[str, Any]:
 
         # 5. Safely rebuild Chroma collection for this specific repository ONLY
         vector_store = get_vector_store()
+        if len(all_chunks) == 0:
+            try:
+                vector_store.delete_collection(repo.id)
+            except Exception:
+                pass
+            repo.embedding_model = getattr(vector_store, "embedding_model_name", getattr(vector_store.embedding_provider, "model_name", "all-MiniLM-L6-v2"))
+            repo.embedding_dimension = getattr(vector_store, "embedding_dimension", getattr(vector_store.embedding_provider, "dimension", 384))
+            repo.file_count = len(valid_files)
+            repo.chunk_count = 0
+            db.commit()
+            return {
+                "repository_id": repo.id,
+                "name": repo.name,
+                "files_indexed": len(valid_files),
+                "files_purged": len(ignored_file_ids),
+                "chunks_indexed": 0
+            }
+
         logger.info(f"Safely replacing Chroma collection for repository {repo.id} with {len(all_chunks)} chunks...")
         success = vector_store.safe_replace_collection(repo.id, all_chunks)
         if not success:

@@ -1,9 +1,11 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { FolderGit2, FileCode2, Layers, Clock, ArrowRight, Trash2 } from 'lucide-react';
+import { FolderGit2, Clock, ArrowRight, Trash2, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 
-export const RepositoryCard = ({ repo, onDelete }) => {
+export const RepositoryCard = ({ repo, onDelete, onViewProgress }) => {
   const isCompleted = repo.status === 'completed';
+  const isAnalyzing = repo.status === 'analyzing' || repo.status === 'pending';
+  const isFailed = repo.status === 'failed';
 
   return (
     <div className="bg-[#161B22] border border-[#30363D] hover:border-[#484F58] rounded-xl p-5 flex flex-col justify-between transition group shadow-sm hover:shadow-md">
@@ -20,11 +22,15 @@ export const RepositoryCard = ({ repo, onDelete }) => {
               </h4>
             </div>
           </div>
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border flex items-center gap-1.5 ${
             isCompleted 
               ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
-              : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+              : isAnalyzing
+              ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+              : 'bg-red-500/10 text-red-400 border-red-500/30'
           }`}>
+            {isAnalyzing && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+            {isFailed && <AlertCircle className="w-2.5 h-2.5" />}
             {repo.status}
           </span>
         </div>
@@ -40,11 +46,11 @@ export const RepositoryCard = ({ repo, onDelete }) => {
           </div>
           <div>
             <span className="text-slate-500 block text-[10px]">Files</span>
-            <span className="text-slate-300 font-medium block">{repo.file_count}</span>
+            <span className="text-slate-300 font-medium block">{repo.file_count || 0}</span>
           </div>
           <div>
             <span className="text-slate-500 block text-[10px]">Chunks</span>
-            <span className="text-slate-300 font-medium block">{repo.chunk_count}</span>
+            <span className="text-slate-300 font-medium block">{repo.chunk_count || 0}</span>
           </div>
         </div>
       </div>
@@ -69,13 +75,31 @@ export const RepositoryCard = ({ repo, onDelete }) => {
             </button>
           )}
 
-          <Link
-            to={`/repositories/${repo.id}`}
-            className="bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white px-3 py-1.5 rounded-md text-xs font-medium flex items-center space-x-1.5 transition border border-blue-500/30"
-          >
-            <span>Open Chat</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
+          {isAnalyzing ? (
+            <button
+              onClick={() => onViewProgress && onViewProgress(repo)}
+              className="bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white px-3 py-1.5 rounded-md text-xs font-medium flex items-center space-x-1.5 transition border border-blue-500/30"
+            >
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>View Progress</span>
+            </button>
+          ) : isFailed ? (
+            <button
+              onClick={() => onViewProgress && onViewProgress(repo)}
+              className="bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white px-3 py-1.5 rounded-md text-xs font-medium flex items-center space-x-1.5 transition border border-red-500/30"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry</span>
+            </button>
+          ) : (
+            <Link
+              to={`/repositories/${repo.id}`}
+              className="bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white px-3 py-1.5 rounded-md text-xs font-medium flex items-center space-x-1.5 transition border border-blue-500/30"
+            >
+              <span>Open Chat</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          )}
         </div>
       </div>
     </div>

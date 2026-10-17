@@ -6,19 +6,21 @@ from app.models.user import User
 from app.schemas.auth import UserRegister, UserLogin
 from app.utils.security import get_password_hash, verify_password, create_access_token, decode_access_token
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 def register_user(db: Session, user_data: UserRegister) -> User:
     # Check existing user
-    if db.query(User).filter(User.email == user_data.email).first():
+    email_clean = user_data.email.strip().lower()
+    username_clean = user_data.username.strip()
+    if db.query(User).filter(User.email.ilike(email_clean)).first():
         raise HTTPException(status_code=400, detail="Email is already registered.")
-    if db.query(User).filter(User.username == user_data.username).first():
+    if db.query(User).filter(User.username.ilike(username_clean)).first():
         raise HTTPException(status_code=400, detail="Username is already taken.")
 
     hashed_pwd = get_password_hash(user_data.password)
     user = User(
-        email=user_data.email,
-        username=user_data.username,
+        email=email_clean,
+        username=username_clean,
         hashed_password=hashed_pwd
     )
     db.add(user)
@@ -27,8 +29,9 @@ def register_user(db: Session, user_data: UserRegister) -> User:
     return user
 
 def authenticate_user(db: Session, credentials: UserLogin) -> dict:
+    identifier = (credentials.username_or_email or "").strip()
     user = db.query(User).filter(
-        (User.username == credentials.username_or_email) | (User.email == credentials.username_or_email)
+        (User.username == identifier) | (User.email.ilike(identifier))
     ).first()
 
     if not user or not verify_password(credentials.password, user.hashed_password):

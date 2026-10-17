@@ -9,7 +9,7 @@ import { ArchDiagram } from '../components/repository/ArchDiagram';
 import { CodeInsightsCard } from '../components/insights/CodeInsightsCard';
 import { DependencyTable } from '../components/insights/DependencyTable';
 import { DocGeneratorModal } from '../components/docgen/DocGeneratorModal';
-import { MessageSquare, BookOpen, Cpu, ShieldAlert, Package, FileText, FolderGit2, Loader2, ArrowLeft, ExternalLink } from 'lucide-react';
+import { MessageSquare, BookOpen, Cpu, ShieldAlert, Package, FileText, FolderGit2, Loader2, ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react';
 
 export const RepoWorkspacePage = () => {
   const { repoId } = useParams();
@@ -27,14 +27,16 @@ export const RepoWorkspacePage = () => {
   const [archGraph, setArchGraph] = useState(null);
   const [insightsData, setInsightsData] = useState([]);
   const [depsData, setDepsData] = useState(null);
+  const [analysisStatus, setAnalysisStatus] = useState(null);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
 
-  useEffect(() => {
-    const loadRepoData = async () => {
-      setLoading(true);
-      try {
-        const repoRes = await api.get(`/repositories/${repoId}`);
-        setRepo(repoRes.data);
+  const loadRepoData = async () => {
+    setLoading(true);
+    try {
+      const repoRes = await api.get(`/repositories/${repoId}`);
+      setRepo(repoRes.data);
 
+      if (repoRes.data.status === 'completed') {
         // Fetch repo overview with README preview
         try {
           const overviewRes = await api.get(`/repositories/${repoId}/overview`);
@@ -64,23 +66,86 @@ export const RepoWorkspacePage = () => {
         }
 
         // Fetch auxiliary data
-        const archRes = await api.get(`/repositories/${repoId}/architecture`);
-        setArchGraph(archRes.data);
+        try {
+          const archRes = await api.get(`/repositories/${repoId}/architecture`);
+          setArchGraph(archRes.data);
+        } catch (e) {}
 
-        const insightsRes = await api.get(`/repositories/${repoId}/insights`);
-        setInsightsData(insightsRes.data.insights || []);
+        try {
+          const insightsRes = await api.get(`/repositories/${repoId}/insights`);
+          setInsightsData(insightsRes.data.insights || []);
+        } catch (e) {}
 
-        const depsRes = await api.get(`/repositories/${repoId}/dependencies`);
-        setDepsData(depsRes.data);
-
-      } catch (err) {
-        console.error("Error loading workspace data:", err);
-      } finally {
-        setLoading(false);
+        try {
+          const depsRes = await api.get(`/repositories/${repoId}/dependencies`);
+          setDepsData(depsRes.data);
+        } catch (e) {}
       }
-    };
+    } catch (err) {
+      console.error("Error loading workspace data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     loadRepoData();
   }, [repoId]);
+
+  // Live polling if repository is still in analyzing/pending state
+  useEffect(() => {
+    let timer;
+    let isCancelled = false;
+
+    if (repo && (repo.status === 'analyzing' || repo.status === 'pending')) {
+      const poll = async () => {
+        try {
+          const res = await api.get(`/repositories/${repoId}/analysis-status`);
+          if (isCancelled) return;
+          setAnalysisStatus(res.data);
+
+          if (res.data.status === 'completed') {
+            loadRepoData();
+            return;
+          } else if (res.data.status === 'failed') {
+            setRepo(prev => ({ ...prev, status: 'failed' }));
+            return;
+          }
+        } catch (e) {
+          console.error("Error polling status in workspace:", e);
+        }
+
+        if (!isCancelled) {
+          timer = setTimeout(poll, 2000);
+        }
+      };
+      poll();
+    }
+
+    return () => {
+      isCancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [repo?.status, repoId]);
+
+  const handleReanalyze = async () => {
+    if (!repo) return;
+    setIsReanalyzing(true);
+    try {
+      await api.post('/repositories', { url: repo.url, reanalyze: true });
+      setRepo(prev => ({ ...prev, status: 'analyzing' }));
+      setAnalysisStatus({
+        status: 'analyzing',
+        current_stage: 'validating',
+        progress_percent: 10,
+        message: 'Reanalysis started...'
+      });
+    } catch (err) {
+      console.error("Failed to start reanalysis:", err);
+    } finally {
+      setIsReanalyzing(false);
+    }
+  };
 
   const handleSelectCitation = async (filePath, startLine, endLine) => {
     // Find file object
@@ -225,6 +290,48 @@ export const RepoWorkspacePage = () => {
           <span>Generate Docs</span>
         </button>
       </div>
+
+      {/* Real-time Analysis Progress Banner */}
+      {(repo.status === 'analyzing' || repo.status === 'pending') && (
+        <div className="bg-blue-950/50 border-b border-blue-500/30 px-4 py-2.5 flex items-center justify-between text-xs font-mono text-blue-200 shrink-0">
+          <div className="flex items-center space-x-3">
+            <Loader2 className="w-4 h-4 text-blue-400 animate-spin shrink-0" />
+            <span>
+              Analyzing repository: <span className="font-bold text-white">{analysisStatus?.current_stage || 'Processing'}</span>
+              {analysisStatus?.message ? ` — ${analysisStatus.message}` : ''}
+            </span>
+          </div>
+          <div className="flex items-center space-x-3">
+            <div className="w-36 h-2 bg-[#0D1117] rounded-full overflow-hidden border border-[#30363D]">
+              <div
+                className="h-full bg-blue-500 transition-all duration-300"
+                style={{ width: `${analysisStatus?.progress_percent || 15}%` }}
+              />
+            </div>
+            <span className="font-bold text-blue-400">{analysisStatus?.progress_percent || 10}%</span>
+          </div>
+        </div>
+      )}
+
+      {/* Analysis Failure Banner */}
+      {repo.status === 'failed' && (
+        <div className="bg-red-950/50 border-b border-red-500/30 px-4 py-2.5 flex items-center justify-between text-xs font-mono text-red-200 shrink-0">
+          <div className="flex items-center space-x-3">
+            <ShieldAlert className="w-4 h-4 text-red-400 shrink-0" />
+            <span>
+              Analysis failed: {analysisStatus?.error_details || 'An error occurred during repository ingestion.'}
+            </span>
+          </div>
+          <button
+            onClick={handleReanalyze}
+            disabled={isReanalyzing}
+            className="px-3 py-1 bg-red-600/30 hover:bg-red-600/50 text-red-200 border border-red-500/40 rounded text-xs transition flex items-center space-x-1"
+          >
+            {isReanalyzing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+            <span>Retry Analysis</span>
+          </button>
+        </div>
+      )}
 
       {/* Main Workspace Body */}
       <div className="flex-1 flex min-h-0 overflow-hidden">

@@ -7,25 +7,41 @@ from app.models.repository import Repository
 from app.models.file import RepositoryFile
 from app.models.user import User
 from app.models.job import AnalysisJob
-from app.github.client import parse_github_url, get_github_repo_metadata
+from app.github.client import parse_github_url, get_github_repo_metadata, normalize_github_url
 
-async def create_repository(db: Session, user: User, url: str) -> Tuple[Repository, AnalysisJob]:
-    owner, name = parse_github_url(url)
+async def create_repository(
+    db: Session,
+    user: User,
+    url: str,
+    reanalyze: bool = False
+) -> Tuple[Repository, Optional[AnalysisJob], bool]:
+    norm_url = normalize_github_url(url)
+    owner, name = parse_github_url(norm_url)
     metadata = await get_github_repo_metadata(owner, name)
 
     # Check if repo exists for user
     existing_repo = db.query(Repository).filter(
         Repository.user_id == user.id,
-        Repository.url == url
+        Repository.url == norm_url
     ).first()
+
+    # If repo is already completed with indexed files/chunks and reanalysis was not explicitly requested, reuse it
+    if existing_repo and not reanalyze:
+        if existing_repo.status == "completed" and (existing_repo.chunk_count > 0 or existing_repo.file_count > 0):
+            latest_job = db.query(AnalysisJob).filter(
+                AnalysisJob.repository_id == existing_repo.id
+            ).order_by(AnalysisJob.created_at.desc(), AnalysisJob.updated_at.desc()).first()
+            return existing_repo, latest_job, True
 
     if existing_repo:
         repo = existing_repo
         repo.status = "analyzing"
+        repo.description = metadata.get("description") or repo.description
+        repo.primary_language = metadata.get("primary_language") or repo.primary_language
     else:
         repo = Repository(
             user_id=user.id,
-            url=url,
+            url=norm_url,
             owner=metadata["owner"],
             name=metadata["name"],
             default_branch=metadata["default_branch"],
@@ -49,7 +65,7 @@ async def create_repository(db: Session, user: User, url: str) -> Tuple[Reposito
     db.refresh(repo)
     db.refresh(job)
 
-    return repo, job
+    return repo, job, False
 
 def get_user_repositories(db: Session, user_id: str) -> List[Repository]:
     return db.query(Repository).filter(Repository.user_id == user_id).order_by(Repository.updated_at.desc()).all()

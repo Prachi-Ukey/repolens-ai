@@ -122,7 +122,7 @@ class Settings(BaseSettings):
         if self.CHROMA_PERSIST_DIRECTORY.startswith("./") or self.CHROMA_PERSIST_DIRECTORY == "chroma_data":
             rel = self.CHROMA_PERSIST_DIRECTORY.replace("./", "")
             self.CHROMA_PERSIST_DIRECTORY = os.path.abspath(os.path.join(BACKEND_DIR, rel))
-        if self.DATABASE_URL == "sqlite:///./repolens.db":
+        if self.DATABASE_URL in ("sqlite:///./repolens.db", "sqlite:///repolens.db"):
             self.DATABASE_URL = _default_db
 
         # When Gemini is configured, always ensure 768 dimensions

@@ -21,13 +21,22 @@ async def add_repository(
     current_user: User = Depends(get_current_user)
 ):
     try:
-        repo, job = await create_repository(db, current_user, repo_data.url)
-        # Dispatch background ingestion pipeline
-        background_tasks.add_task(run_ingestion_pipeline, job.id, repo.id)
+        repo, job, is_already_completed = await create_repository(
+            db, current_user, repo_data.url, reanalyze=bool(repo_data.reanalyze)
+        )
+        if not is_already_completed and job:
+            # Dispatch background ingestion pipeline
+            background_tasks.add_task(run_ingestion_pipeline, job.id, repo.id)
+            message = "Repository queued for analysis."
+        else:
+            message = "Repository already analyzed and ready."
+
         return {
             "repository": RepositoryResponse.model_validate(repo),
-            "job_id": job.id,
-            "message": "Repository queued for analysis."
+            "job_id": job.id if job else None,
+            "status": repo.status,
+            "is_already_completed": is_already_completed,
+            "message": message
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -59,16 +68,30 @@ def delete_repository(repo_id: str, db: Session = Depends(get_db), current_user:
 
 @router.get("/{repo_id}/analysis-status", response_model=AnalysisStatusResponse)
 def get_analysis_status(repo_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    job = db.query(AnalysisJob).filter(AnalysisJob.repository_id == repo_id).order_by(AnalysisJob.created_at.desc()).first()
+    repo = get_repository_by_id(db, repo_id, current_user.id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    job = db.query(AnalysisJob).filter(AnalysisJob.repository_id == repo.id).order_by(AnalysisJob.created_at.desc(), AnalysisJob.updated_at.desc()).first()
     if not job:
         raise HTTPException(status_code=404, detail="Analysis job not found for repository.")
+
+    job_status = job.status
+    job_stage = job.current_stage
+    job_percent = job.progress_percent
+    job_msg = job.message
+    if repo.status == "completed" and job_status != "failed":
+        job_status = "completed"
+        job_stage = "completed"
+        job_percent = 100
+        job_msg = job_msg or "Analysis complete!"
+
     return AnalysisStatusResponse(
         job_id=job.id,
         repository_id=job.repository_id,
-        status=job.status,
-        current_stage=job.current_stage,
-        progress_percent=job.progress_percent,
-        message=job.message,
+        status=job_status,
+        current_stage=job_stage,
+        progress_percent=job_percent,
+        message=job_msg,
         error_details=job.error_details
     )
 
@@ -89,9 +112,12 @@ def get_files(repo_id: str, db: Session = Depends(get_db), current_user: User = 
 
 @router.get("/{repo_id}/files/{file_id:path}", response_model=RepositoryFileResponse)
 def get_file_content(repo_id: str, file_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    repo = get_repository_by_id(db, repo_id, current_user.id)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
     from sqlalchemy import or_
     file_obj = db.query(RepositoryFile).filter(
-        RepositoryFile.repository_id == repo_id,
+        RepositoryFile.repository_id == repo.id,
         or_(RepositoryFile.id == file_id, RepositoryFile.file_path == file_id)
     ).first()
     if not file_obj:

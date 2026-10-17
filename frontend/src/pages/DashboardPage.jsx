@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { Navbar } from '../components/layout/Navbar';
@@ -12,22 +12,52 @@ export const DashboardPage = () => {
   const [repositories, setRepositories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [modalInitialRepoId, setModalInitialRepoId] = useState(null);
+  const [modalInitialUrl, setModalInitialUrl] = useState('');
   const navigate = useNavigate();
+  const pollTimerRef = useRef(null);
 
-  const fetchRepositories = async () => {
+  const fetchRepositories = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       const res = await api.get('/repositories');
-      setRepositories(res.data);
+      setRepositories(res.data || []);
+
+      // Check for an ongoing analysis session to restore
+      const activeRepoId = sessionStorage.getItem('repolens_active_analysis_repo_id');
+      if (activeRepoId && res.data) {
+        const activeRepo = res.data.find(r => r.id === activeRepoId);
+        if (activeRepo && (activeRepo.status === 'analyzing' || activeRepo.status === 'pending')) {
+          setModalInitialRepoId(activeRepo.id);
+          setModalInitialUrl(activeRepo.url);
+          setIsAddModalOpen(true);
+        } else if (activeRepo && activeRepo.status === 'completed') {
+          sessionStorage.removeItem('repolens_active_analysis_repo_id');
+        }
+      }
     } catch (err) {
       console.error("Error loading repositories:", err);
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchRepositories();
   }, []);
+
+  // Periodic background check if any repository is currently analyzing
+  useEffect(() => {
+    const hasActiveAnalyzing = repositories.some(r => r.status === 'analyzing' || r.status === 'pending');
+    if (hasActiveAnalyzing) {
+      pollTimerRef.current = setTimeout(() => {
+        fetchRepositories(true);
+      }, 4000);
+    }
+    return () => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, [repositories]);
 
   const handleLoadDemo = async () => {
     setLoading(true);
@@ -48,9 +78,30 @@ export const DashboardPage = () => {
     try {
       await api.delete(`/repositories/${repoId}`);
       setRepositories(prev => prev.filter(r => r.id !== repoId));
+      if (sessionStorage.getItem('repolens_active_analysis_repo_id') === repoId) {
+        sessionStorage.removeItem('repolens_active_analysis_repo_id');
+      }
     } catch (err) {
       console.error("Error deleting repository:", err);
     }
+  };
+
+  const handleOpenAddModal = (repo = null) => {
+    if (repo) {
+      setModalInitialRepoId(repo.id);
+      setModalInitialUrl(repo.url);
+    } else {
+      setModalInitialRepoId(null);
+      setModalInitialUrl('');
+    }
+    setIsAddModalOpen(true);
+  };
+
+  const handleCloseAddModal = () => {
+    setIsAddModalOpen(false);
+    setModalInitialRepoId(null);
+    setModalInitialUrl('');
+    fetchRepositories(true);
   };
 
   // Aggregated Stats
@@ -63,7 +114,7 @@ export const DashboardPage = () => {
       <Navbar />
 
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar onOpenAddModal={() => setIsAddModalOpen(true)} onLoadDemo={handleLoadDemo} />
+        <Sidebar onOpenAddModal={() => handleOpenAddModal()} onLoadDemo={handleLoadDemo} />
 
         <main className="flex-1 overflow-y-auto p-6 space-y-8">
           {/* Top Header */}
@@ -85,7 +136,7 @@ export const DashboardPage = () => {
               </button>
 
               <button
-                onClick={() => setIsAddModalOpen(true)}
+                onClick={() => handleOpenAddModal()}
                 className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-mono font-medium flex items-center space-x-2 shadow-lg shadow-blue-600/20 transition"
               >
                 <Plus className="w-4 h-4" />
@@ -129,7 +180,7 @@ export const DashboardPage = () => {
                     Load Sample Demo
                   </button>
                   <button
-                    onClick={() => setIsAddModalOpen(true)}
+                    onClick={() => handleOpenAddModal()}
                     className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition shadow-md shadow-blue-600/20"
                   >
                     Add GitHub URL
@@ -139,7 +190,12 @@ export const DashboardPage = () => {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                 {repositories.map(repo => (
-                  <RepositoryCard key={repo.id} repo={repo} onDelete={handleDeleteRepo} />
+                  <RepositoryCard
+                    key={repo.id}
+                    repo={repo}
+                    onDelete={handleDeleteRepo}
+                    onViewProgress={(r) => handleOpenAddModal(r)}
+                  />
                 ))}
               </div>
             )}
@@ -149,7 +205,9 @@ export const DashboardPage = () => {
 
       <AddRepoModal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
+        initialRepoId={modalInitialRepoId}
+        initialUrl={modalInitialUrl}
+        onClose={handleCloseAddModal}
         onSuccess={(repoId) => {
           fetchRepositories();
           navigate(`/repositories/${repoId}`);

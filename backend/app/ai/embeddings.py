@@ -103,7 +103,7 @@ class LocalEmbedding(EmbeddingProvider):
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
-        batch_size: int = 32,
+        batch_size: int = 64,
     ):
         self._model_name = model_name
         self._dim = 384
