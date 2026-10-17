@@ -5,57 +5,57 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('repolens_token') || null);
+  const [token, setToken] = useState(() => localStorage.getItem('repolens_token') || null);
   const [loading, setLoading] = useState(true);
 
+  // Validate existing stored token once on mount
   useEffect(() => {
-    const fetchUser = async () => {
-      let currentToken = token;
-      if (!currentToken) {
+    let isMounted = true;
+    const initAuth = async () => {
+      const storedToken = localStorage.getItem('repolens_token');
+      if (storedToken) {
         try {
-          const demoRes = await api.get('/auth/demo-token');
-          if (demoRes.data && demoRes.data.access_token) {
-            currentToken = demoRes.data.access_token;
-            localStorage.setItem('repolens_token', currentToken);
-            setToken(currentToken);
+          const res = await api.get('/auth/me', {
+            headers: { Authorization: `Bearer ${storedToken}` },
+            timeout: 10000 // 10s bounded timeout
+          });
+          if (isMounted) {
+            setUser(res.data);
+            setToken(storedToken);
           }
         } catch (err) {
-          console.warn("Could not auto-fetch demo token:", err);
-        }
-      }
-
-      if (currentToken) {
-        try {
-          const res = await api.get('/auth/me');
-          setUser(res.data);
-        } catch (err) {
-          console.error("Error loading user session, refreshing demo token:", err);
-          try {
-            const demoRes = await api.get('/auth/demo-token');
-            if (demoRes.data && demoRes.data.access_token) {
-              const freshToken = demoRes.data.access_token;
-              localStorage.setItem('repolens_token', freshToken);
-              setToken(freshToken);
-              const res2 = await api.get('/auth/me');
-              setUser(res2.data);
-            }
-          } catch (e) {
-            logout();
+          console.warn("Stored session token expired or invalid:", err?.message || err);
+          if (isMounted) {
+            localStorage.removeItem('repolens_token');
+            setToken(null);
+            setUser(null);
           }
         }
+      } else {
+        if (isMounted) {
+          setUser(null);
+          setToken(null);
+        }
       }
-      setLoading(false);
+      if (isMounted) {
+        setLoading(false);
+      }
     };
-    fetchUser();
-  }, [token]);
 
+    initAuth();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const login = async (username_or_email, password) => {
     const res = await api.post('/auth/login', { username_or_email, password });
     const newToken = res.data.access_token;
     localStorage.setItem('repolens_token', newToken);
     setToken(newToken);
-    const userRes = await api.get('/auth/me');
+    const userRes = await api.get('/auth/me', {
+      headers: { Authorization: `Bearer ${newToken}` }
+    });
     setUser(userRes.data);
     return userRes.data;
   };
@@ -65,6 +65,18 @@ export const AuthProvider = ({ children }) => {
     return await login(username, password);
   };
 
+  const loginDemo = async () => {
+    const demoRes = await api.get('/auth/demo-token');
+    const demoToken = demoRes.data.access_token;
+    localStorage.setItem('repolens_token', demoToken);
+    setToken(demoToken);
+    const userRes = await api.get('/auth/me', {
+      headers: { Authorization: `Bearer ${demoToken}` }
+    });
+    setUser(userRes.data);
+    return userRes.data;
+  };
+
   const logout = () => {
     localStorage.removeItem('repolens_token');
     setToken(null);
@@ -72,7 +84,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, login, register, loginDemo, logout }}>
       {children}
     </AuthContext.Provider>
   );

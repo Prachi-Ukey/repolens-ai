@@ -19,10 +19,22 @@ import numpy as np
 
 from app.config import settings
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
+_LAZY_ST_SENTINEL = object()
+SentenceTransformer = _LAZY_ST_SENTINEL
+
+def _get_sentence_transformer_cls():
+    global SentenceTransformer
+    if SentenceTransformer is None:
+        return None
+    if SentenceTransformer is not _LAZY_ST_SENTINEL:
+        return SentenceTransformer
+    try:
+        from sentence_transformers import SentenceTransformer as ST
+        SentenceTransformer = ST
+        return SentenceTransformer
+    except ImportError:
+        SentenceTransformer = None
+        return None
 
 logger = logging.getLogger("repolens.ai.embeddings")
 
@@ -118,7 +130,8 @@ class LocalEmbedding(EmbeddingProvider):
             if _cached_local_model is not None:
                 return _cached_local_model
 
-            if SentenceTransformer is None:
+            ST = _get_sentence_transformer_cls()
+            if ST is None:
                 raise RuntimeError(
                     "sentence-transformers package is not installed. "
                     "Install sentence-transformers via `pip install sentence-transformers` to use local embeddings."
@@ -126,7 +139,7 @@ class LocalEmbedding(EmbeddingProvider):
 
             logger.info("Initializing local embedding model lazily: %s", self._model_name)
             try:
-                _cached_local_model = SentenceTransformer(self._model_name)
+                _cached_local_model = ST(self._model_name)
                 logger.info("Local embedding model loaded successfully: %s", self._model_name)
             except Exception as exc:
                 logger.error("Failed to load local embedding model '%s': %s", self._model_name, exc, exc_info=True)
@@ -418,7 +431,7 @@ def get_embedding_provider() -> EmbeddingProvider:
     )
 
     if provider == "local":
-        if is_production and SentenceTransformer is None:
+        if is_production and _get_sentence_transformer_cls() is None:
             raise RuntimeError(
                 "Production embedding configuration error: "
                 "EMBEDDING_PROVIDER is 'local', but sentence-transformers is not installed. "

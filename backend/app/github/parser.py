@@ -1137,9 +1137,16 @@ def process_repository_files(
 
     all_chunks = []
 
+    MAX_FILES_LIMIT = int(os.environ.get("MAX_REPO_FILES", "1000"))
+    MAX_CHUNKS_LIMIT = int(os.environ.get("MAX_REPO_CHUNKS", "5000"))
+    MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE_BYTES", str(1024 * 1024)))
+
     for root, dirs, files in os.walk(
         repo_dir
     ):
+        if len(discovered_files) >= MAX_FILES_LIMIT:
+            logger.info("Reached maximum repository file limit (%s). Terminating file discovery.", MAX_FILES_LIMIT)
+            break
 
         # ----------------------------------------------------
         # Remove ignored directories.
@@ -1155,6 +1162,8 @@ def process_repository_files(
         ]
 
         for filename in files:
+            if len(discovered_files) >= MAX_FILES_LIMIT:
+                break
 
             full_path = os.path.join(
                 root,
@@ -1191,13 +1200,12 @@ def process_repository_files(
                 )
 
                 # ------------------------------------------------
-                # Ignore empty or extremely large files.
+                # Ignore empty or oversized files.
                 # ------------------------------------------------
 
                 if (
                     size_bytes == 0
-                    or size_bytes
-                    > 2 * 1024 * 1024
+                    or size_bytes > MAX_FILE_SIZE
                 ):
                     continue
 
@@ -1228,20 +1236,21 @@ def process_repository_files(
                 )
 
                 # ------------------------------------------------
-                # Create semantic/fixed chunks.
+                # Create semantic/fixed chunks if under budget.
                 # ------------------------------------------------
 
-                file_chunks = (
-                    parse_file_into_chunks(
-                        rel_path,
-                        content,
-                        language,
+                if len(all_chunks) < MAX_CHUNKS_LIMIT:
+                    file_chunks = (
+                        parse_file_into_chunks(
+                            rel_path,
+                            content,
+                            language,
+                        )
                     )
-                )
 
-                all_chunks.extend(
-                    file_chunks
-                )
+                    all_chunks.extend(
+                        file_chunks[: MAX_CHUNKS_LIMIT - len(all_chunks)]
+                    )
 
             except Exception as e:
 

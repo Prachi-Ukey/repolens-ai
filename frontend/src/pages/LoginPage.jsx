@@ -8,24 +8,47 @@ export const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
 
-  const { login } = useAuth();
+  const { login, loginDemo } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading || demoLoading) return;
     setError(null);
     setLoading(true);
 
     try {
-      await login(usernameOrEmail, password);
+      await login(usernameOrEmail.trim(), password);
       navigate('/dashboard');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Invalid credentials.');
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg).join(', ') : (err.message || 'Invalid credentials.'));
+      setError(msg);
     } finally {
       setLoading(false);
     }
   };
+
+  const handleDemoLogin = async () => {
+    if (loading || demoLoading) return;
+    setError(null);
+    setDemoLoading(true);
+
+    try {
+      await loginDemo();
+      navigate('/dashboard');
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (err.message || 'Demo login failed. Please try manual sign in.');
+      setError(msg);
+    } finally {
+      setDemoLoading(false);
+    }
+  };
+
+  const isBusy = loading || demoLoading;
 
   return (
     <div className="min-h-screen bg-[#0D1117] flex items-center justify-center p-4 font-mono">
@@ -51,10 +74,11 @@ export const LoginPage = () => {
             <input
               type="text"
               required
+              disabled={isBusy}
               placeholder="developer@repolens.ai"
               value={usernameOrEmail}
               onChange={(e) => setUsernameOrEmail(e.target.value)}
-              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition"
+              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition disabled:opacity-50"
             />
           </div>
 
@@ -63,20 +87,31 @@ export const LoginPage = () => {
             <input
               type="password"
               required
+              disabled={isBusy}
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition"
+              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition disabled:opacity-50"
             />
           </div>
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg transition shadow-md shadow-blue-600/20 flex items-center justify-center space-x-2"
+            disabled={isBusy}
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg transition shadow-md shadow-blue-600/20 flex items-center justify-center space-x-2 disabled:opacity-60"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
             <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleDemoLogin}
+            disabled={isBusy}
+            className="w-full bg-[#21262D] hover:bg-[#30363D] text-slate-300 font-medium py-2 rounded-lg transition border border-[#30363D] flex items-center justify-center space-x-2 text-[11px] disabled:opacity-60"
+          >
+            {demoLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+            <span>{demoLoading ? 'Starting Demo Session...' : 'Instant Demo Access'}</span>
           </button>
         </form>
 

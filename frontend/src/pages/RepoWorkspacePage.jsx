@@ -37,49 +37,51 @@ export const RepoWorkspacePage = () => {
       setRepo(repoRes.data);
 
       if (repoRes.data.status === 'completed') {
-        // Fetch repo overview with README preview
-        try {
-          const overviewRes = await api.get(`/repositories/${repoId}/overview`);
-          setRepoOverview(overviewRes.data);
-        } catch (e) {
-          console.warn("Could not load repo overview:", e);
+        // Fetch workspace resources concurrently instead of sequential waterfall
+        const [filesResult, overviewResult, archResult, insightsResult, depsResult] = await Promise.allSettled([
+          api.get(`/repositories/${repoId}/files`),
+          api.get(`/repositories/${repoId}/overview`),
+          api.get(`/repositories/${repoId}/architecture`),
+          api.get(`/repositories/${repoId}/insights`),
+          api.get(`/repositories/${repoId}/dependencies`)
+        ]);
+
+        if (overviewResult.status === 'fulfilled') {
+          setRepoOverview(overviewResult.value.data);
         }
 
-        const filesRes = await api.get(`/repositories/${repoId}/files`);
-        const files = filesRes.data.flat_files || [];
-        setFileTree(filesRes.data.tree || []);
-        setFlatFiles(files);
+        if (archResult.status === 'fulfilled') {
+          setArchGraph(archResult.value.data);
+        }
 
-        // Prefer README file as initial code viewer preview, otherwise first file
-        const defaultFile = files.find(f => f.file_path && f.file_path.toLowerCase().includes('readme')) || files[0];
-        if (defaultFile) {
-          if (!defaultFile.content) {
-            try {
-              const fileContentRes = await api.get(`/repositories/${repoId}/files/${defaultFile.id}`);
-              setSelectedFile(fileContentRes.data);
-            } catch (e) {
+        if (insightsResult.status === 'fulfilled') {
+          setInsightsData(insightsResult.value.data.insights || []);
+        }
+
+        if (depsResult.status === 'fulfilled') {
+          setDepsData(depsResult.value.data);
+        }
+
+        if (filesResult.status === 'fulfilled') {
+          const files = filesResult.value.data.flat_files || [];
+          setFileTree(filesResult.value.data.tree || []);
+          setFlatFiles(files);
+
+          // Prefer README file as initial code viewer preview, otherwise first file
+          const defaultFile = files.find(f => f.file_path && f.file_path.toLowerCase().includes('readme')) || files[0];
+          if (defaultFile) {
+            if (!defaultFile.content) {
+              try {
+                const fileContentRes = await api.get(`/repositories/${repoId}/files/${defaultFile.id}`);
+                setSelectedFile(fileContentRes.data);
+              } catch (e) {
+                setSelectedFile(defaultFile);
+              }
+            } else {
               setSelectedFile(defaultFile);
             }
-          } else {
-            setSelectedFile(defaultFile);
           }
         }
-
-        // Fetch auxiliary data
-        try {
-          const archRes = await api.get(`/repositories/${repoId}/architecture`);
-          setArchGraph(archRes.data);
-        } catch (e) {}
-
-        try {
-          const insightsRes = await api.get(`/repositories/${repoId}/insights`);
-          setInsightsData(insightsRes.data.insights || []);
-        } catch (e) {}
-
-        try {
-          const depsRes = await api.get(`/repositories/${repoId}/dependencies`);
-          setDepsData(depsRes.data);
-        } catch (e) {}
       }
     } catch (err) {
       console.error("Error loading workspace data:", err);

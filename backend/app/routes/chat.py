@@ -35,10 +35,22 @@ router = APIRouter(
 # RAG ENGINE
 # ============================================================
 
-rag_engine = RAGEngine(
-    vector_store=get_vector_store(),
-    llm_provider=get_llm_provider()
-)
+_rag_engine_instance = None
+
+def get_rag_engine() -> RAGEngine:
+    global _rag_engine_instance
+    if _rag_engine_instance is None:
+        _rag_engine_instance = RAGEngine(
+            vector_store=get_vector_store(),
+            llm_provider=get_llm_provider()
+        )
+    return _rag_engine_instance
+
+class _LazyRAGEngineProxy:
+    def __getattr__(self, name):
+        return getattr(get_rag_engine(), name)
+
+rag_engine = _LazyRAGEngineProxy()
 
 
 # ============================================================

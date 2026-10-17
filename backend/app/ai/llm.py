@@ -1494,9 +1494,28 @@ class GeminiLLM(LLMProvider):
         yield self.generate_response(system_prompt, user_prompt)
 
 
+_cached_llm_provider = None
+_cached_llm_key = None
+
 def get_llm_provider() -> LLMProvider:
+    global _cached_llm_provider, _cached_llm_key
 
     provider = settings.LLM_PROVIDER.lower()
+    current_key = (
+        provider,
+        getattr(settings, "OLLAMA_MODEL", None),
+        getattr(settings, "OLLAMA_BASE_URL", None),
+        getattr(settings, "OPENAI_MODEL", None),
+        getattr(settings, "OPENAI_API_KEY", None),
+        getattr(settings, "GEMINI_MODEL", None),
+        getattr(settings, "GEMINI_API_KEY", None),
+        getattr(settings, "APP_ENV", None)
+    )
+
+    if _cached_llm_provider is not None and _cached_llm_key == current_key:
+        return _cached_llm_provider
+
+    instance: LLMProvider
 
     # ---------------------------------------------------------
     # Ollama
@@ -1512,7 +1531,7 @@ def get_llm_provider() -> LLMProvider:
             base_url
         )
 
-        return OllamaLLM(
+        instance = OllamaLLM(
             model=model,
             base_url=base_url
         )
@@ -1521,66 +1540,71 @@ def get_llm_provider() -> LLMProvider:
     # OpenAI
     # ---------------------------------------------------------
 
-    if provider == "openai":
+    elif provider == "openai":
         if not settings.OPENAI_API_KEY:
             if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
                 raise ValueError(
                     "Production LLM configuration error: OPENAI_API_KEY must be configured when LLM_PROVIDER='openai'."
                 )
             logger.warning("OpenAI API key missing; falling back to MockLLM.")
-            return MockLLM()
+            instance = MockLLM()
+        else:
+            logger.info(
+                "Using OpenAI LLM: %s",
+                settings.OPENAI_MODEL
+            )
 
-        logger.info(
-            "Using OpenAI LLM: %s",
-            settings.OPENAI_MODEL
-        )
-
-        return OpenAILLM(
-            settings.OPENAI_API_KEY,
-            settings.OPENAI_MODEL
-        )
+            instance = OpenAILLM(
+                settings.OPENAI_API_KEY,
+                settings.OPENAI_MODEL
+            )
 
     # ---------------------------------------------------------
     # Gemini
     # ---------------------------------------------------------
 
-    if provider == "gemini":
+    elif provider == "gemini":
         if not settings.GEMINI_API_KEY:
             if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
                 raise ValueError(
                     "Production LLM configuration error: GEMINI_API_KEY must be configured when LLM_PROVIDER='gemini'."
                 )
             logger.warning("Gemini API key missing; falling back to MockLLM.")
-            return MockLLM()
+            instance = MockLLM()
+        else:
+            logger.info(
+                "Using Gemini LLM: %s",
+                settings.GEMINI_MODEL
+            )
 
-        logger.info(
-            "Using Gemini LLM: %s",
-            settings.GEMINI_MODEL
-        )
-
-        return GeminiLLM(
-            settings.GEMINI_API_KEY,
-            settings.GEMINI_MODEL
-        )
+            instance = GeminiLLM(
+                settings.GEMINI_API_KEY,
+                settings.GEMINI_MODEL
+            )
 
     # ---------------------------------------------------------
     # Mock fallback
     # ---------------------------------------------------------
 
-    if provider != "mock":
-        if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
-            raise ValueError(
-                f"Production LLM configuration error: Unsupported or unconfigured LLM provider '{provider}'."
+    else:
+        if provider != "mock":
+            if str(getattr(settings, "APP_ENV", "development")).strip().lower() == "production":
+                raise ValueError(
+                    f"Production LLM configuration error: Unsupported or unconfigured LLM provider '{provider}'."
+                )
+
+            logger.warning(
+                "LLM provider '%s' API key missing "
+                "or invalid. Falling back to MockLLM.",
+                provider
             )
 
-        logger.warning(
-            "LLM provider '%s' API key missing "
-            "or invalid. Falling back to MockLLM.",
-            provider
+        logger.info(
+            "Using MockLLM."
         )
 
-    logger.info(
-        "Using MockLLM."
-    )
+        instance = MockLLM()
 
-    return MockLLM()
+    _cached_llm_provider = instance
+    _cached_llm_key = current_key
+    return _cached_llm_provider

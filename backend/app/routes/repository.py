@@ -107,7 +107,20 @@ def get_files(repo_id: str, db: Session = Depends(get_db), current_user: User = 
         "repository_id": repo_id,
         "total_files": len(files),
         "tree": tree,
-        "flat_files": [RepositoryFileResponse.model_validate(f) for f in files]
+        "flat_files": [
+            RepositoryFileResponse(
+                id=f.id,
+                repository_id=f.repository_id,
+                file_path=f.file_path,
+                file_name=f.file_name,
+                language=f.language,
+                size_bytes=f.size_bytes,
+                line_count=f.line_count,
+                sha_hash=f.sha_hash,
+                content=None  # Optimized: fetch on-demand via /files/{file_id} to minimize payload
+            )
+            for f in files
+        ]
     }
 
 @router.get("/{repo_id}/files/{file_id:path}", response_model=RepositoryFileResponse)

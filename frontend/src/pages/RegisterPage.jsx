@@ -15,14 +15,17 @@ export const RegisterPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setError(null);
     setLoading(true);
 
     try {
-      await register(email, username, password);
+      await register(email.trim(), username.trim(), password);
       navigate('/dashboard');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Registration failed.');
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map(d => d.msg).join(', ') : (err.message || 'Registration failed.'));
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -52,10 +55,11 @@ export const RegisterPage = () => {
             <input
               type="email"
               required
+              disabled={loading}
               placeholder="developer@repolens.ai"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition"
+              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition disabled:opacity-50"
             />
           </div>
 
@@ -64,10 +68,11 @@ export const RegisterPage = () => {
             <input
               type="text"
               required
+              disabled={loading}
               placeholder="dev_user"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition"
+              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition disabled:opacity-50"
             />
           </div>
 
@@ -76,18 +81,19 @@ export const RegisterPage = () => {
             <input
               type="password"
               required
+              disabled={loading}
               minLength={6}
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition"
+              className="w-full bg-[#0D1117] border border-[#30363D] focus:border-blue-500 rounded-lg px-3.5 py-2.5 text-slate-100 placeholder-slate-500 outline-none transition disabled:opacity-50"
             />
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg transition shadow-md shadow-blue-600/20 flex items-center justify-center space-x-2"
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg transition shadow-md shadow-blue-600/20 flex items-center justify-center space-x-2 disabled:opacity-60"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
             <span>{loading ? 'Creating Account...' : 'Register'}</span>

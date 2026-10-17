@@ -20,15 +20,25 @@ app = FastAPI(
 )
 
 # Configure CORS
-cors_origins = (
+configured_origins = (
     [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
     if settings.CORS_ORIGINS and settings.CORS_ORIGINS != "*"
-    else ["*"]
+    else []
 )
+default_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "https://repolens-ai-kappa.vercel.app",
+    "https://repolens-ai.vercel.app",
+]
+cors_origins = list(set(configured_origins + default_origins)) if (configured_origins or settings.CORS_ORIGINS != "*") else ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"^https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
