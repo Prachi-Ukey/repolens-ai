@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 import chromadb
 
@@ -38,6 +38,7 @@ class ChromaManager:
         self.embedding_provider = (
             get_embedding_provider()
         )
+        self._pending_backups: Dict[str, Dict[str, Any]] = {}
 
     # ========================================================
     # EMBEDDING IDENTITY & COMPATIBILITY
@@ -410,7 +411,9 @@ class ChromaManager:
     def safe_replace_collection(
         self,
         repository_id: str,
-        chunks: List[Dict[str, Any]]
+        chunks: List[Dict[str, Any]],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        deferred_cleanup: bool = False,
     ) -> bool:
         """
         Safely replaces the Chroma collection for a repository with the provided chunks.
@@ -430,11 +433,17 @@ class ChromaManager:
             )
             return False
 
-        # Validate that candidate chunks are non-empty and well-formed
-        valid_chunks = [
-            c for c in chunks
-            if c and c.get("content") and str(c.get("content")).strip() and c.get("chunk_id")
-        ]
+        # Validate and deduplicate candidate chunks in a single pass to avoid duplicate full-size lists
+        seen_ids = set()
+        valid_chunks = []
+        for c in chunks:
+            if c and c.get("content") and str(c.get("content")).strip() and c.get("chunk_id"):
+                cid = str(c["chunk_id"])
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    valid_chunks.append(c)
+        del seen_ids
+
         if not valid_chunks:
             logger.warning(
                 "Cannot replace collection for repo '%s': all candidate chunks are empty or invalid; retaining existing collection.",
@@ -442,93 +451,94 @@ class ChromaManager:
             )
             return False
 
-        # Deduplicate chunks by chunk_id while preserving order
-        seen_ids = set()
-        deduped_chunks = []
-        for c in valid_chunks:
-            cid = str(c["chunk_id"])
-            if cid not in seen_ids:
-                seen_ids.add(cid)
-                deduped_chunks.append(c)
-        valid_chunks = deduped_chunks
-
-        documents = [c["content"] for c in valid_chunks]
-        ids = [str(c["chunk_id"]) for c in valid_chunks]
-        metadatas = [
-            {
-                "file_path": c.get("file_path", ""),
-                "language": c.get("language", ""),
-                "start_line": int(c.get("start_line", 1)),
-                "end_line": int(c.get("end_line", 1)),
-                "symbol_name": c.get("symbol_name") or "",
-                "chunk_id": str(c.get("chunk_id")),
-                "defined_symbols": c.get("defined_symbols", ""),
-                "called_symbols": c.get("called_symbols", ""),
-                "imported_symbols": c.get("imported_symbols", ""),
-            }
-            for c in valid_chunks
-        ]
-
         target_dim = self.embedding_dimension
         active_model = self.embedding_model_name
-
-        # 1. Generate embeddings BEFORE modifying or deleting any existing collection
-        try:
-            embeddings = self.embedding_provider.embed_documents(documents)
-        except Exception as embed_err:
-            logger.error(
-                "Failed to generate embeddings for repo '%s' replacement: %s; retaining existing collection.",
-                repository_id,
-                embed_err,
-                exc_info=True,
-            )
-            return False
-
-        if not embeddings or len(embeddings) != len(documents):
-            logger.error(
-                "Embedding provider generated %s embeddings for %s documents for repo '%s'; retaining existing collection.",
-                len(embeddings) if embeddings else 0,
-                len(documents),
-                repository_id,
-            )
-            return False
-
-        # Validate vector dimension matches expected target_dim
-        if len(embeddings[0]) != target_dim:
-            logger.error(
-                "Generated embeddings dimension %s does not match expected target dimension %s for repo '%s'; retaining existing collection.",
-                len(embeddings[0]),
-                target_dim,
-                repository_id,
-            )
-            return False
 
         target_col_name = self._get_collection_name(repository_id)
         staging_col_name = f"staging_{target_col_name}_{uuid.uuid4().hex[:8]}"
         staging_col = None
 
-        # 2. Create and populate staging collection
+        # 1. Create and populate staging collection in bounded batches
+        # This keeps peak memory bounded to batch_size chunks, avoiding storing all vectors in Python lists at once.
         staging_metadata = {
             "dimension": target_dim,
             "provider": getattr(settings, "EMBEDDING_PROVIDER", "local"),
             "model": active_model,
         }
+        raw_upsert_batch = os.environ.get("CHROMA_UPSERT_BATCH_SIZE")
+        upsert_batch_size = 16
+        if raw_upsert_batch is not None:
+            try:
+                parsed_batch = int(str(raw_upsert_batch).strip())
+                if parsed_batch > 0:
+                    upsert_batch_size = parsed_batch
+            except (ValueError, TypeError):
+                pass
         try:
             staging_col = self.client.create_collection(
                 name=staging_col_name,
                 metadata=staging_metadata,
             )
 
-            batch_size = 100
-            for i in range(0, len(valid_chunks), batch_size):
-                staging_col.upsert(
-                    ids=ids[i:i + batch_size],
-                    embeddings=embeddings[i:i + batch_size],
-                    documents=documents[i:i + batch_size],
-                    metadatas=metadatas[i:i + batch_size],
-                )
+            for i in range(0, len(valid_chunks), upsert_batch_size):
+                batch_chunks = valid_chunks[i : i + upsert_batch_size]
+                batch_docs = [c["content"] for c in batch_chunks]
+                batch_ids = [str(c["chunk_id"]) for c in batch_chunks]
+                batch_metas = [
+                    {
+                        "file_path": c.get("file_path", ""),
+                        "language": c.get("language", ""),
+                        "start_line": int(c.get("start_line", 1)),
+                        "end_line": int(c.get("end_line", 1)),
+                        "symbol_name": c.get("symbol_name") or "",
+                        "chunk_id": str(c.get("chunk_id")),
+                        "defined_symbols": c.get("defined_symbols", ""),
+                        "called_symbols": c.get("called_symbols", ""),
+                        "imported_symbols": c.get("imported_symbols", ""),
+                    }
+                    for c in batch_chunks
+                ]
 
-            # 3. Require strict staging verification (Requirement 1)
+                try:
+                    batch_embs = self.embedding_provider.embed_documents(batch_docs)
+                except Exception as embed_err:
+                    logger.error(
+                        "Failed to generate embeddings for repo '%s' batch: %s; retaining existing collection.",
+                        repository_id,
+                        embed_err,
+                        exc_info=True,
+                    )
+                    raise
+
+                if not batch_embs or len(batch_embs) != len(batch_docs):
+                    raise RuntimeError(
+                        f"Embedding provider generated {len(batch_embs) if batch_embs else 0} embeddings for {len(batch_docs)} documents for repo '{repository_id}'."
+                    )
+
+                if len(batch_embs[0]) != target_dim:
+                    raise RuntimeError(
+                        f"Generated embeddings dimension {len(batch_embs[0])} does not match expected target dimension {target_dim} for repo '{repository_id}'."
+                    )
+
+                staging_col.upsert(
+                    ids=batch_ids,
+                    embeddings=batch_embs,
+                    documents=batch_docs,
+                    metadatas=batch_metas,
+                )
+                del batch_docs, batch_ids, batch_metas, batch_embs
+
+                if progress_callback is not None:
+                    try:
+                        progress_callback(min(i + upsert_batch_size, len(valid_chunks)), len(valid_chunks))
+                    except Exception as cb_err:
+                        logger.warning(
+                            "Embedding progress callback failed for repo '%s': %s",
+                            repository_id,
+                            cb_err,
+                        )
+
+            # 2. Require strict staging verification (Requirement 1)
             # Must pass exact expected chunk count and confirmed vector dimension equal to target_dim
             staged_count = staging_col.count()
             staged_dim = self.get_collection_dimension(staging_col)
@@ -580,6 +590,14 @@ class ChromaManager:
                     promoted_col = self.client.get_collection(name=target_col_name)
                     promoted_dim = self.get_collection_dimension(promoted_col)
                     if promoted_col.count() == len(valid_chunks) and promoted_dim is not None and promoted_dim == target_dim:
+                        if deferred_cleanup:
+                            self._pending_backups[repository_id] = {
+                                "backup_col_name": None,
+                                "target_col_name": target_col_name,
+                                "orig_count": 0,
+                                "orig_dim": None,
+                                "rename_supported": True,
+                            }
                         logger.info("Created Chroma collection '%s' with %s chunks.", target_col_name, len(valid_chunks))
                         return True
                     else:
@@ -609,6 +627,14 @@ class ChromaManager:
                         pass
                     target_dim_found = self.get_collection_dimension(target_col)
                     if copy_ok and target_col.count() == len(valid_chunks) and target_dim_found is not None and target_dim_found == target_dim:
+                        if deferred_cleanup:
+                            self._pending_backups[repository_id] = {
+                                "backup_col_name": None,
+                                "target_col_name": target_col_name,
+                                "orig_count": 0,
+                                "orig_dim": None,
+                                "rename_supported": False,
+                            }
                         logger.info("Created Chroma collection '%s' with %s chunks via verified copy.", target_col_name, len(valid_chunks))
                         return True
                     else:
@@ -689,6 +715,23 @@ class ChromaManager:
                     )
 
                 if promoted_successfully:
+                    if deferred_cleanup:
+                        self._pending_backups[repository_id] = {
+                            "backup_col_name": backup_col_name,
+                            "target_col_name": target_col_name,
+                            "orig_count": orig_count,
+                            "orig_dim": orig_dim,
+                            "rename_supported": True,
+                        }
+                        logger.info(
+                            "Safely replaced Chroma collection '%s' with %s chunks (%s-d); backup '%s' retained pending database commit.",
+                            target_col_name,
+                            len(valid_chunks),
+                            target_dim,
+                            backup_col_name,
+                        )
+                        return True
+
                     # Delete backup collection only after promotion & verification succeed
                     try:
                         self.client.delete_collection(name=backup_col_name)
@@ -912,6 +955,26 @@ class ChromaManager:
             logger.error("Failed to create/populate replacement collection '%s': %s. Initiating rollback.", target_col_name, repl_err)
 
         if replacement_ok:
+            if deferred_cleanup:
+                self._pending_backups[repository_id] = {
+                    "backup_col_name": backup_col_name,
+                    "target_col_name": target_col_name,
+                    "orig_count": orig_count,
+                    "orig_dim": orig_dim,
+                    "rename_supported": False,
+                }
+                try:
+                    self.client.delete_collection(name=staging_col_name)
+                except Exception:
+                    pass
+                logger.info(
+                    "Safely replaced Chroma collection '%s' with %s chunks via verified backup-and-restore; backup '%s' retained pending database commit.",
+                    target_col_name,
+                    len(valid_chunks),
+                    backup_col_name,
+                )
+                return True
+
             try:
                 self.client.delete_collection(name=backup_col_name)
             except Exception:
@@ -998,6 +1061,192 @@ class ChromaManager:
             except Exception:
                 pass
             return False
+
+    def has_pending_replacement(self, repository_id: str) -> bool:
+        """
+        Checks whether there is an active deferred collection replacement
+        waiting for external database transaction finalization.
+        """
+        return repository_id in self._pending_backups
+
+    def finalize_replacement(self, repository_id: str) -> bool:
+        """
+        Finalizes a safe collection replacement after the external database commit succeeds.
+        Deletes the preserved backup collection and clears pending replacement tracking.
+        """
+        info = self._pending_backups.pop(repository_id, None)
+        if not info:
+            return True
+
+        backup_name = info.get("backup_col_name")
+        if backup_name:
+            try:
+                self.client.delete_collection(name=backup_name)
+                logger.info(
+                    "Finalized collection replacement for repo '%s': temporary backup '%s' deleted.",
+                    repository_id,
+                    backup_name,
+                )
+            except Exception as cleanup_err:
+                logger.warning(
+                    "Non-fatal: Failed to delete temporary backup collection '%s' during finalization for repo '%s': %s",
+                    backup_name,
+                    repository_id,
+                    cleanup_err,
+                )
+        return True
+
+    def rollback_replacement(self, repository_id: str) -> bool:
+        """
+        Rolls back a replaced Chroma collection to the preserved backup collection
+        when an external database transaction fails.
+        Verifies that the restored collection matches the original count and dimension.
+        If backup restoration fails, falls back to database-backed rebuild.
+        Returns True if consistency was verified and restored; False otherwise.
+        """
+        info = self._pending_backups.pop(repository_id, None)
+        if not info:
+            logger.warning(
+                "No pending replacement found to rollback for repository '%s'. Attempting database-backed recovery...",
+                repository_id,
+            )
+            return self.rebuild_collection_from_db(repository_id)
+
+        target_col_name = info["target_col_name"]
+        backup_name = info.get("backup_col_name")
+        orig_count = info.get("orig_count", 0)
+        orig_dim = info.get("orig_dim")
+        rename_supported = info.get("rename_supported", False)
+
+        # Case 1: Initial ingestion (no prior collection existed).
+        # Discard the replacement target collection so no orphaned vectors remain.
+        if not backup_name:
+            try:
+                self.client.delete_collection(name=target_col_name)
+                logger.info(
+                    "Successfully rolled back newly created collection '%s' for repository '%s'.",
+                    target_col_name,
+                    repository_id,
+                )
+                return True
+            except Exception as del_err:
+                logger.error(
+                    "Failed to delete newly created collection '%s' during rollback for repository '%s': %s",
+                    target_col_name,
+                    repository_id,
+                    del_err,
+                )
+                return False
+
+        # Case 2: Prior collection was preserved in backup_name.
+        try:
+            backup_col = self.client.get_collection(name=backup_name)
+        except Exception as bk_err:
+            logger.critical(
+                "CRITICAL: Preserved backup collection '%s' for repo '%s' could not be retrieved: %s. "
+                "Attempting database-backed rebuild...",
+                backup_name,
+                repository_id,
+                bk_err,
+            )
+            return self.rebuild_collection_from_db(repository_id)
+
+        # Step 2a: Try rename restoration if supported
+        if rename_supported and callable(getattr(backup_col, "modify", None)):
+            try:
+                try:
+                    self.client.delete_collection(name=target_col_name)
+                except Exception:
+                    pass
+
+                backup_col.modify(name=target_col_name)
+                restored_col = self.client.get_collection(name=target_col_name)
+                restored_count = restored_col.count()
+                restored_dim = self.get_collection_dimension(restored_col)
+
+                count_ok = (restored_count == orig_count)
+                dim_ok = (orig_count == 0 or (orig_dim is not None and restored_dim is not None and restored_dim == orig_dim))
+
+                if count_ok and dim_ok:
+                    logger.info(
+                        "Successfully rolled back and verified original collection '%s' from backup '%s' for repo '%s'.",
+                        target_col_name,
+                        backup_name,
+                        repository_id,
+                    )
+                    return True
+                else:
+                    logger.critical(
+                        "CRITICAL: Restored collection '%s' failed verification during rename rollback for repo '%s' "
+                        "(count: %s vs %s, dim: %s vs %s). Attempting database-backed rebuild...",
+                        target_col_name,
+                        repository_id,
+                        restored_count,
+                        orig_count,
+                        restored_dim,
+                        orig_dim,
+                    )
+                    return self.rebuild_collection_from_db(repository_id)
+            except Exception as rename_err:
+                logger.warning(
+                    "Rename rollback from '%s' to '%s' failed for repo '%s': %s. Falling back to copy restoration...",
+                    backup_name,
+                    target_col_name,
+                    repository_id,
+                    rename_err,
+                )
+
+        # Step 2b: Fallback to verified copy restoration
+        try:
+            try:
+                self.client.delete_collection(name=target_col_name)
+            except Exception:
+                pass
+
+            restored_col = self.client.create_collection(
+                name=target_col_name,
+                metadata=backup_col.metadata,
+            )
+            copy_ok = self._copy_collection_data(backup_col, restored_col)
+            restored_count = restored_col.count()
+            restored_dim = self.get_collection_dimension(restored_col)
+
+            count_ok = (copy_ok and restored_count == orig_count)
+            dim_ok = (orig_count == 0 or (orig_dim is not None and restored_dim is not None and restored_dim == orig_dim))
+
+            if count_ok and dim_ok:
+                try:
+                    self.client.delete_collection(name=backup_name)
+                except Exception:
+                    pass
+                logger.info(
+                    "Successfully restored and verified original collection '%s' from backup '%s' via copy for repo '%s'.",
+                    target_col_name,
+                    backup_name,
+                    repository_id,
+                )
+                return True
+            else:
+                logger.critical(
+                    "CRITICAL: Copy restoration from backup '%s' failed verification for repo '%s' "
+                    "(count: %s vs %s, dim: %s vs %s). Attempting database-backed rebuild...",
+                    backup_name,
+                    repository_id,
+                    restored_count,
+                    orig_count,
+                    restored_dim,
+                    orig_dim,
+                )
+                return self.rebuild_collection_from_db(repository_id)
+        except Exception as copy_err:
+            logger.critical(
+                "CRITICAL: Copy restoration from backup '%s' encountered error for repo '%s': %s. "
+                "Attempting database-backed rebuild...",
+                backup_name,
+                repository_id,
+                copy_err,
+            )
+            return self.rebuild_collection_from_db(repository_id)
 
     def rebuild_collection_from_db(
         self,
@@ -1300,88 +1549,69 @@ class ChromaManager:
                     )
                 return
 
-        documents = [
-            chunk["content"]
-            for chunk in chunks
-        ]
-
-        metadatas = [
-            {
-                "file_path": chunk["file_path"],
-                "language": chunk["language"],
-                "start_line": int(
-                    chunk["start_line"]
-                ),
-                "end_line": int(
-                    chunk["end_line"]
-                ),
-                "symbol_name": (
-                    chunk.get("symbol_name")
-                    or ""
-                ),
-                "chunk_id": chunk["chunk_id"],
-                "defined_symbols": chunk.get("defined_symbols", ""),
-                "called_symbols": chunk.get("called_symbols", ""),
-                "imported_symbols": chunk.get("imported_symbols", ""),
-            }
-            for chunk in chunks
-        ]
-
-        ids = [
-            chunk["chunk_id"]
-            for chunk in chunks
-        ]
-
         # -----------------------------------------------------
-        # Generate embeddings
+        # Batch embedding generation and upsert
         # -----------------------------------------------------
-        try:
-            embeddings = self.embedding_provider.embed_documents(documents)
-        except Exception as embed_err:
-            logger.error("Failed to generate embeddings during upsert for repo '%s': %s", repository_id, embed_err, exc_info=True)
-            return
+        raw_upsert_batch = os.environ.get("CHROMA_UPSERT_BATCH_SIZE")
+        upsert_batch_size = 16
+        if raw_upsert_batch is not None:
+            try:
+                parsed_batch = int(str(raw_upsert_batch).strip())
+                if parsed_batch > 0:
+                    upsert_batch_size = parsed_batch
+            except (ValueError, TypeError):
+                pass
 
-        if not embeddings or len(embeddings) != len(documents):
-            logger.error(
-                "Embedding provider generated %s embeddings for %s documents for repo '%s'. Aborting upsert.",
-                len(embeddings) if embeddings else 0,
-                len(documents),
-                repository_id,
-            )
-            return
+        for i in range(0, len(chunks), upsert_batch_size):
+            batch_slice = chunks[i : i + upsert_batch_size]
+            batch_docs = [chunk["content"] for chunk in batch_slice]
+            batch_ids = [str(chunk["chunk_id"]) for chunk in batch_slice]
+            batch_metas = [
+                {
+                    "file_path": chunk["file_path"],
+                    "language": chunk["language"],
+                    "start_line": int(chunk["start_line"]),
+                    "end_line": int(chunk["end_line"]),
+                    "symbol_name": chunk.get("symbol_name") or "",
+                    "chunk_id": str(chunk["chunk_id"]),
+                    "defined_symbols": chunk.get("defined_symbols", ""),
+                    "called_symbols": chunk.get("called_symbols", ""),
+                    "imported_symbols": chunk.get("imported_symbols", ""),
+                }
+                for chunk in batch_slice
+            ]
 
-        if len(embeddings[0]) != target_dim:
-            logger.error(
-                "Generated embeddings dimension %s does not match expected target dimension %s for repo '%s'. Aborting upsert.",
-                len(embeddings[0]),
-                target_dim,
-                repository_id,
-            )
-            return
+            try:
+                batch_embeddings = self.embedding_provider.embed_documents(batch_docs)
+            except Exception as embed_err:
+                logger.error("Failed to generate embeddings during upsert for repo '%s': %s", repository_id, embed_err, exc_info=True)
+                return
 
-        # -----------------------------------------------------
-        # Batch upsert
-        # -----------------------------------------------------
-        batch_size = 100
-        for i in range(
-            0,
-            len(chunks),
-            batch_size
-        ):
+            if not batch_embeddings or len(batch_embeddings) != len(batch_docs):
+                logger.error(
+                    "Embedding provider generated %s embeddings for %s documents for repo '%s'. Aborting upsert.",
+                    len(batch_embeddings) if batch_embeddings else 0,
+                    len(batch_docs),
+                    repository_id,
+                )
+                return
+
+            if len(batch_embeddings[0]) != target_dim:
+                logger.error(
+                    "Generated embeddings dimension %s does not match expected target dimension %s for repo '%s'. Aborting upsert.",
+                    len(batch_embeddings[0]),
+                    target_dim,
+                    repository_id,
+                )
+                return
+
             collection.upsert(
-                ids=ids[
-                    i:i + batch_size
-                ],
-                embeddings=embeddings[
-                    i:i + batch_size
-                ],
-                documents=documents[
-                    i:i + batch_size
-                ],
-                metadatas=metadatas[
-                    i:i + batch_size
-                ],
+                ids=batch_ids,
+                embeddings=batch_embeddings,
+                documents=batch_docs,
+                metadatas=batch_metas,
             )
+            del batch_docs, batch_ids, batch_metas, batch_embeddings
 
         logger.info(
             "Upserted %s chunks to collection '%s'",

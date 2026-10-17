@@ -34,6 +34,17 @@ async def create_repository(
             return existing_repo, latest_job, True
 
     if existing_repo:
+        active_job = db.query(AnalysisJob).filter(
+            AnalysisJob.repository_id == existing_repo.id,
+            AnalysisJob.status.in_(["pending", "processing"])
+        ).first()
+        if active_job:
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An analysis job is already in progress for this repository."
+            )
+
         repo = existing_repo
         repo.status = "analyzing"
         repo.description = metadata.get("description") or repo.description

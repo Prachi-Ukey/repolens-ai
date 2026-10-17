@@ -115,10 +115,21 @@ class LocalEmbedding(EmbeddingProvider):
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
-        batch_size: int = 64,
+        batch_size: Optional[int] = None,
     ):
         self._model_name = model_name
         self._dim = 384
+        if batch_size is None or not (isinstance(batch_size, int) and batch_size > 0):
+            raw_batch = os.environ.get("EMBEDDING_BATCH_SIZE")
+            safe_batch = 16
+            if raw_batch is not None:
+                try:
+                    parsed = int(str(raw_batch).strip())
+                    if parsed > 0:
+                        safe_batch = parsed
+                except (ValueError, TypeError):
+                    pass
+            batch_size = safe_batch
         self._batch_size = batch_size
 
     def _load_model(self):
@@ -136,6 +147,21 @@ class LocalEmbedding(EmbeddingProvider):
                     "sentence-transformers package is not installed. "
                     "Install sentence-transformers via `pip install sentence-transformers` to use local embeddings."
                 )
+
+            # Restrict PyTorch CPU thread pool to 1 thread to prevent multi-core memory blowups on 512 MB instances
+            try:
+                import torch
+                try:
+                    torch.set_num_threads(1)
+                except (RuntimeError, AttributeError) as thread_exc:
+                    logger.warning("Could not set PyTorch intra-op threads to 1: %s", thread_exc)
+
+                try:
+                    torch.set_num_interop_threads(1)
+                except (RuntimeError, AttributeError) as interop_exc:
+                    logger.warning("Could not set PyTorch inter-op threads to 1: %s", interop_exc)
+            except ImportError:
+                pass
 
             logger.info("Initializing local embedding model lazily: %s", self._model_name)
             try:
@@ -170,12 +196,20 @@ class LocalEmbedding(EmbeddingProvider):
 
         model = self._load_model()
         try:
-            embeddings = model.encode(
-                texts,
-                batch_size=self._batch_size,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
+            import torch
+            inference_ctx = torch.inference_mode()
+        except (ImportError, AttributeError):
+            import contextlib
+            inference_ctx = contextlib.nullcontext()
+
+        try:
+            with inference_ctx:
+                embeddings = model.encode(
+                    texts,
+                    batch_size=self._batch_size,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
             return embeddings.tolist()
         except Exception as exc:
             logger.error("Local embedding document inference error: %s", exc, exc_info=True)
@@ -187,11 +221,19 @@ class LocalEmbedding(EmbeddingProvider):
 
         model = self._load_model()
         try:
-            embedding = model.encode(
-                text,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
+            import torch
+            inference_ctx = torch.inference_mode()
+        except (ImportError, AttributeError):
+            import contextlib
+            inference_ctx = contextlib.nullcontext()
+
+        try:
+            with inference_ctx:
+                embedding = model.encode(
+                    text,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
             return embedding.tolist()
         except Exception as exc:
             logger.error("Local embedding query inference error: %s", exc, exc_info=True)

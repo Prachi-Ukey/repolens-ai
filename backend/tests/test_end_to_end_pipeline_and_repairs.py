@@ -804,3 +804,359 @@ def test_19_explicit_reanalysis_forces_pipeline(client, test_users, db_session):
     assert data["status"] == "analyzing"
     assert data["job_id"] is not None
     assert data["job_id"] != job0.id
+
+
+# =====================================================================
+# 20. Failed vector replacement during re-index preserves existing DB records
+# =====================================================================
+def test_20_reindex_failure_preserves_database_records_and_status(db_session, test_users):
+    u1 = test_users["user1"]
+    uid = uuid.uuid4().hex[:8]
+    repo_id = f"reindex-fail-{uid}"
+    job1_id = f"job-initial-{uid}"
+    job2_id = f"job-reindex-{uid}"
+
+    # 1. Seed repository with initial files and chunks
+    repo = Repository(
+        id=repo_id,
+        user_id=u1.id,
+        url=f"https://github.com/mock-org/reindex-fail-{uid}",
+        owner="mock-org",
+        name=f"reindex-fail-{uid}",
+        primary_language="Python",
+        file_count=2,
+        chunk_count=3,
+        status="completed"
+    )
+    job1 = AnalysisJob(
+        id=job1_id,
+        repository_id=repo.id,
+        status="completed",
+        current_stage="completed",
+        progress_percent=100
+    )
+    db_session.add(repo)
+    db_session.add(job1)
+    db_session.commit()
+
+    f1 = RepositoryFile(
+        id=f"file1-{uid}",
+        repository_id=repo.id,
+        file_path="src/app.py",
+        file_name="app.py",
+        language="python",
+        content="def run():\n    return 'v1'\n",
+        size_bytes=30,
+        line_count=2
+    )
+    f2 = RepositoryFile(
+        id=f"file2-{uid}",
+        repository_id=repo.id,
+        file_path="src/utils.py",
+        file_name="utils.py",
+        language="python",
+        content="def helper():\n    return 'help_v1'\n",
+        size_bytes=35,
+        line_count=2
+    )
+    db_session.add(f1)
+    db_session.add(f2)
+    db_session.commit()
+
+    c1 = CodeChunk(
+        id=f"c1-{uid}",
+        repository_id=repo.id,
+        file_id=f1.id,
+        file_path="src/app.py",
+        language="python",
+        start_line=1,
+        end_line=2,
+        symbol_name="run",
+        chunk_id=f"chunk1-{uid}",
+        content="def run():\n    return 'v1'\n"
+    )
+    c2 = CodeChunk(
+        id=f"c2-{uid}",
+        repository_id=repo.id,
+        file_id=f2.id,
+        file_path="src/utils.py",
+        language="python",
+        start_line=1,
+        end_line=2,
+        symbol_name="helper",
+        chunk_id=f"chunk2-{uid}",
+        content="def helper():\n    return 'help_v1'\n"
+    )
+    c3 = CodeChunk(
+        id=f"c3-{uid}",
+        repository_id=repo.id,
+        file_id=f2.id,
+        file_path="src/utils.py",
+        language="python",
+        start_line=3,
+        end_line=4,
+        symbol_name="helper2",
+        chunk_id=f"chunk3-{uid}",
+        content="def helper2():\n    return 42\n"
+    )
+    db_session.add(c1)
+    db_session.add(c2)
+    db_session.add(c3)
+    db_session.commit()
+
+    # Seed vector store with initial 3 chunks
+    vector_store = get_vector_store()
+    vector_store.safe_replace_collection(repo.id, [
+        {"chunk_id": c1.chunk_id, "content": c1.content, "file_path": c1.file_path, "language": "python", "start_line": 1, "end_line": 2},
+        {"chunk_id": c2.chunk_id, "content": c2.content, "file_path": c2.file_path, "language": "python", "start_line": 1, "end_line": 2},
+        {"chunk_id": c3.chunk_id, "content": c3.content, "file_path": c3.file_path, "language": "python", "start_line": 3, "end_line": 4},
+    ])
+    col = vector_store.get_or_create_collection(repo.id)
+    assert col.count() == 3
+
+    # 2. Simulate re-indexing attempt with a new job and new repository content
+    temp_dir = tempfile.mkdtemp(prefix="repolens_reindex_fail_")
+    try:
+        with open(os.path.join(temp_dir, "main.py"), "w", encoding="utf-8") as f:
+            f.write("def main_v2():\n    return 'v2'\n")
+
+        job2 = AnalysisJob(
+            id=job2_id,
+            repository_id=repo.id,
+            status="pending",
+            current_stage="validating",
+            progress_percent=0
+        )
+        db_session.add(job2)
+        db_session.commit()
+
+        # Simulate vector store replacement failure
+        with patch.object(vector_store, "safe_replace_collection", return_value=False):
+            with patch("app.services.ingestion_service.download_or_clone_repository", return_value=temp_dir):
+                with patch("app.services.ingestion_service.cleanup_repository_dir"):
+                    run_ingestion_pipeline(job2.id, repo.id)
+
+        # 3. Verify job and repo error handling
+        db_session.expire_all()
+        reloaded_job = db_session.query(AnalysisJob).filter(AnalysisJob.id == job2.id).first()
+        reloaded_repo = db_session.query(Repository).filter(Repository.id == repo.id).first()
+
+        assert reloaded_job.status == "failed"
+        assert "Analysis failed" in reloaded_job.message
+        assert reloaded_repo.status == "failed"
+
+        # 4. Verify previous database file and chunk records remain completely intact
+        files_after = db_session.query(RepositoryFile).filter(RepositoryFile.repository_id == repo.id).all()
+        chunks_after = db_session.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).all()
+
+        assert len(files_after) == 2
+        file_paths = {f.file_path for f in files_after}
+        assert file_paths == {"src/app.py", "src/utils.py"}
+        assert "main.py" not in file_paths
+
+        assert len(chunks_after) == 3
+        chunk_ids = {c.chunk_id for c in chunks_after}
+        assert chunk_ids == {f"chunk1-{uid}", f"chunk2-{uid}", f"chunk3-{uid}"}
+
+        # 5. Verify Chroma collection retains original 3 chunks
+        assert col.count() == 3
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        vector_store.delete_collection(repo.id)
+
+
+# =====================================================================
+# 21. Successful re-indexing replaces old records without duplicates
+# =====================================================================
+def test_21_successful_reindex_replaces_old_records_without_duplicates(db_session, test_users):
+    u1 = test_users["user1"]
+    uid = uuid.uuid4().hex[:8]
+    repo_id = f"reindex-succ-{uid}"
+    job1_id = f"job-succ-1-{uid}"
+    job2_id = f"job-succ-2-{uid}"
+
+    # 1. Seed repository with 1 initial file and 1 chunk
+    repo = Repository(
+        id=repo_id,
+        user_id=u1.id,
+        url=f"https://github.com/mock-org/reindex-succ-{uid}",
+        owner="mock-org",
+        name=f"reindex-succ-{uid}",
+        primary_language="Python",
+        file_count=1,
+        chunk_count=1,
+        status="completed"
+    )
+    job1 = AnalysisJob(
+        id=job1_id,
+        repository_id=repo.id,
+        status="completed",
+        current_stage="completed",
+        progress_percent=100
+    )
+    db_session.add(repo)
+    db_session.add(job1)
+    db_session.commit()
+
+    f1 = RepositoryFile(
+        id=f"f1-{uid}",
+        repository_id=repo.id,
+        file_path="old_app.py",
+        file_name="old_app.py",
+        language="python",
+        content="def old(): pass\n",
+        size_bytes=16,
+        line_count=1
+    )
+    db_session.add(f1)
+    db_session.commit()
+
+    c1 = CodeChunk(
+        id=f"c1-{uid}",
+        repository_id=repo.id,
+        file_id=f1.id,
+        file_path="old_app.py",
+        language="python",
+        start_line=1,
+        end_line=1,
+        symbol_name="old",
+        chunk_id=f"chunk-old-{uid}",
+        content="def old(): pass\n"
+    )
+    db_session.add(c1)
+    db_session.commit()
+
+    vector_store = get_vector_store()
+    vector_store.safe_replace_collection(repo.id, [
+        {"chunk_id": c1.chunk_id, "content": c1.content, "file_path": c1.file_path, "language": "python", "start_line": 1, "end_line": 1}
+    ])
+    assert vector_store.get_or_create_collection(repo.id).count() == 1
+
+    temp_dir = tempfile.mkdtemp(prefix="repolens_reindex_succ_")
+    try:
+        # New version has 2 files and 2 chunks
+        with open(os.path.join(temp_dir, "new_app.py"), "w", encoding="utf-8") as f:
+            f.write("def new_func():\n    return 'new'\n")
+        with open(os.path.join(temp_dir, "new_utils.py"), "w", encoding="utf-8") as f:
+            f.write("def helper():\n    return 'new_helper'\n")
+
+        job2 = AnalysisJob(
+            id=job2_id,
+            repository_id=repo.id,
+            status="pending",
+            current_stage="validating",
+            progress_percent=0
+        )
+        db_session.add(job2)
+        db_session.commit()
+
+        with patch("app.services.ingestion_service.download_or_clone_repository", return_value=temp_dir):
+            with patch("app.services.ingestion_service.cleanup_repository_dir"):
+                run_ingestion_pipeline(job2.id, repo.id)
+
+        db_session.expire_all()
+        reloaded_job = db_session.query(AnalysisJob).filter(AnalysisJob.id == job2.id).first()
+        reloaded_repo = db_session.query(Repository).filter(Repository.id == repo.id).first()
+
+        assert reloaded_job.status == "completed"
+        assert reloaded_job.progress_percent == 100
+        assert reloaded_repo.status == "completed"
+        assert reloaded_repo.file_count == 2
+        assert reloaded_repo.chunk_count == 2
+
+        # Verify old records were replaced by new records without duplicates
+        files = db_session.query(RepositoryFile).filter(RepositoryFile.repository_id == repo.id).all()
+        chunks = db_session.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).all()
+
+        assert len(files) == 2
+        assert {f.file_name for f in files} == {"new_app.py", "new_utils.py"}
+
+        assert len(chunks) == 2
+        chunk_files = {c.file_path for c in chunks}
+        assert "old_app.py" not in chunk_files
+
+        col = vector_store.get_or_create_collection(repo.id)
+        assert col.count() == 2
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        vector_store.delete_collection(repo.id)
+
+
+# =====================================================================
+# 22. reindex_existing_repository preserves records on vector failure
+# =====================================================================
+def test_22_reindex_existing_repository_failure_preserves_records(db_session, test_users):
+    u1 = test_users["user1"]
+    uid = uuid.uuid4().hex[:8]
+    repo_id = f"reindex-func-{uid}"
+
+    repo = Repository(
+        id=repo_id,
+        user_id=u1.id,
+        url=f"https://github.com/mock-org/reindex-func-{uid}",
+        owner="mock-org",
+        name=f"reindex-func-{uid}",
+        primary_language="Python",
+        file_count=1,
+        chunk_count=1,
+        status="completed"
+    )
+    db_session.add(repo)
+    db_session.commit()
+
+    f1 = RepositoryFile(
+        id=f"f-func-{uid}",
+        repository_id=repo.id,
+        file_path="src/service.py",
+        file_name="service.py",
+        language="python",
+        content="def compute():\n    return 100\n",
+        size_bytes=32,
+        line_count=2
+    )
+    db_session.add(f1)
+    db_session.commit()
+
+    c1 = CodeChunk(
+        id=f"c-func-{uid}",
+        repository_id=repo.id,
+        file_id=f1.id,
+        file_path="src/service.py",
+        language="python",
+        start_line=1,
+        end_line=2,
+        symbol_name="compute",
+        chunk_id=f"chk-func-{uid}",
+        content="def compute():\n    return 100\n"
+    )
+    db_session.add(c1)
+    db_session.commit()
+
+    vector_store = get_vector_store()
+    vector_store.safe_replace_collection(repo.id, [
+        {"chunk_id": c1.chunk_id, "content": c1.content, "file_path": c1.file_path, "language": "python", "start_line": 1, "end_line": 2}
+    ])
+    assert vector_store.get_or_create_collection(repo.id).count() == 1
+
+    try:
+        # Failure simulation: safe_replace_collection returns False
+        with patch.object(vector_store, "safe_replace_collection", return_value=False):
+            with pytest.raises(RuntimeError, match="Failed to safely reindex"):
+                reindex_existing_repository(repo.id)
+
+        # Database records must still be 1 file, 1 chunk
+        db_session.expire_all()
+        assert db_session.query(RepositoryFile).filter(RepositoryFile.repository_id == repo.id).count() == 1
+        assert db_session.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).count() == 1
+        assert vector_store.get_or_create_collection(repo.id).count() == 1
+
+        # Now test successful path
+        result = reindex_existing_repository(repo.id)
+        assert result["chunks_indexed"] == 1
+        assert db_session.query(CodeChunk).filter(CodeChunk.repository_id == repo.id).count() == 1
+        assert vector_store.get_or_create_collection(repo.id).count() == 1
+
+    finally:
+        vector_store.delete_collection(repo.id)

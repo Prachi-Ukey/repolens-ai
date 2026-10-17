@@ -18,16 +18,22 @@ from app.ai.rag import (
 )
 from app.ai.llm import MockLLM
 from app.ai.vector_store import get_vector_store
+from tests.rag_fixtures import ensure_rag_fixtures, deactivate_rag_isolation
 
 
 class TestRAGCallChainAndRetrieval(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        fixtures = ensure_rag_fixtures()
         cls.vector_store = get_vector_store()
         cls.mock_llm = MockLLM()
         cls.engine = RAGEngine(vector_store=cls.vector_store, llm_provider=cls.mock_llm)
-        cls.vehicle_repo_id = "3f4d8af2-f8d0-4293-ae4e-885a4cbf3221"
-        cls.qa_repo_id = "ddd1aa12-52d8-428e-afbf-304ae0254fb1"
+        cls.vehicle_repo_id = fixtures["vehicle_repo_id"]
+        cls.qa_repo_id = fixtures["vehicle_repo_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        deactivate_rag_isolation()
 
     def test_call_chain_intent_classification(self):
         """Task 1: Verify call-chain intent classification."""

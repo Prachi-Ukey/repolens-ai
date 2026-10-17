@@ -85,6 +85,20 @@ def get_analysis_status(repo_id: str, db: Session = Depends(get_db), current_use
         job_percent = 100
         job_msg = job_msg or "Analysis complete!"
 
+    is_stalled = False
+    if job_status in ("pending", "processing") and job.updated_at:
+        from datetime import datetime, timezone
+        updated = job.updated_at
+        if updated.tzinfo is not None and updated.tzinfo.utcoffset(updated) is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+        time_since_update = (now - updated).total_seconds()
+        if time_since_update > 300:
+            is_stalled = True
+            if not job_msg or "Generating embeddings" in job_msg:
+                job_msg = f"{job_msg} (Warning: No progress reported for >5m; server may have restarted)"
+
     return AnalysisStatusResponse(
         job_id=job.id,
         repository_id=job.repository_id,
@@ -92,7 +106,8 @@ def get_analysis_status(repo_id: str, db: Session = Depends(get_db), current_use
         current_stage=job_stage,
         progress_percent=job_percent,
         message=job_msg,
-        error_details=job.error_details
+        error_details=job.error_details,
+        is_stalled=is_stalled
     )
 
 @router.get("/{repo_id}/files")

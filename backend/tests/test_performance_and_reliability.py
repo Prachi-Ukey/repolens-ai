@@ -25,8 +25,16 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_
 @pytest.fixture(scope="module", autouse=True)
 def setup_test_db():
     Base.metadata.create_all(bind=test_engine)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
+    prior_override = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        yield
+    finally:
+        if prior_override is not None:
+            app.dependency_overrides[get_db] = prior_override
+        else:
+            app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(bind=test_engine)
 
 def override_get_db():
     db = TestingSessionLocal()
@@ -35,7 +43,6 @@ def override_get_db():
     finally:
         db.close()
 
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
 
 
@@ -225,3 +232,356 @@ def test_cors_whitelisting_headers():
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == "https://repolens-ai-kappa.vercel.app"
     assert response.headers.get("access-control-allow-credentials") == "true"
+
+
+def test_local_embedding_batch_size_configuration():
+    from app.ai.embeddings import LocalEmbedding
+
+    # Default batch size is 16 for 512 MB memory footprint
+    emb_default = LocalEmbedding()
+    assert emb_default._batch_size == 16
+
+    # Explicit batch size is respected
+    emb_custom = LocalEmbedding(batch_size=8)
+    assert emb_custom._batch_size == 8
+
+    # Environment variable override is respected
+    old_env = os.environ.get("EMBEDDING_BATCH_SIZE")
+    try:
+        os.environ["EMBEDDING_BATCH_SIZE"] = "24"
+        emb_env = LocalEmbedding()
+        assert emb_env._batch_size == 24
+    finally:
+        if old_env is not None:
+            os.environ["EMBEDDING_BATCH_SIZE"] = old_env
+        else:
+            os.environ.pop("EMBEDDING_BATCH_SIZE", None)
+
+
+def test_embedding_progress_callback_resilient_to_callback_failure():
+    from app.ai.vector_store import get_vector_store
+
+    vs = get_vector_store()
+    repo_id = f"cb-fail-test-{uuid.uuid4().hex[:8]}"
+    chunks = [
+        {
+            "chunk_id": f"chunk-{i}",
+            "content": f"def test_func_{i}(): return {i}",
+            "file_path": "test.py",
+            "language": "python",
+            "start_line": i * 5,
+            "end_line": i * 5 + 4,
+            "symbol_name": f"test_func_{i}",
+        }
+        for i in range(20)
+    ]
+
+    callback_invoked = []
+
+    def failing_callback(processed: int, total: int):
+        callback_invoked.append((processed, total))
+        raise RuntimeError("Simulated transient callback failure (e.g. DB connection blip)")
+
+    # Even though the callback raises an exception, the collection replacement must succeed cleanly
+    success = vs.safe_replace_collection(repo_id, chunks, progress_callback=failing_callback)
+    assert success is True
+    assert len(callback_invoked) >= 1
+
+    # Cleanup
+    try:
+        vs.delete_collection(repo_id)
+    except Exception:
+        pass
+
+
+def test_failed_embedding_batch_cleans_up_staging_and_preserves_target():
+    from unittest.mock import patch
+    from app.ai.vector_store import get_vector_store
+
+    vs = get_vector_store()
+    repo_id = f"batch-fail-test-{uuid.uuid4().hex[:8]}"
+    initial_chunks = [
+        {"chunk_id": "c1", "content": "initial content", "file_path": "init.py", "language": "python", "start_line": 1, "end_line": 2}
+    ]
+    # Create initial collection
+    vs.safe_replace_collection(repo_id, initial_chunks)
+    col = vs.client.get_collection(vs._get_collection_name(repo_id))
+    assert col.count() == 1
+
+    replacement_chunks = [
+        {"chunk_id": f"rep-{i}", "content": f"replacement code {i}", "file_path": "rep.py", "language": "python", "start_line": i, "end_line": i + 1}
+        for i in range(10)
+    ]
+
+    # Mock embed_documents to fail during batch generation
+    with patch.object(vs.embedding_provider, "embed_documents", side_effect=RuntimeError("Simulated batch embedding OOM/crash")):
+        success = vs.safe_replace_collection(repo_id, replacement_chunks)
+        assert success is False
+
+    # Target collection must still be intact with its initial count
+    col = vs.client.get_collection(vs._get_collection_name(repo_id))
+    assert col.count() == 1
+
+    # Ensure no lingering staging collections
+    col_names = [c.name for c in vs.client.list_collections()]
+    assert not any(name.startswith(f"staging_repo_{repo_id.replace('-', '_')}") for name in col_names)
+
+    # Cleanup
+    try:
+        vs.delete_collection(repo_id)
+    except Exception:
+        pass
+
+
+def test_active_job_exceeding_five_minutes_not_failed():
+    from datetime import datetime, timezone, timedelta
+    from app.routes.repository import get_analysis_status
+
+    db = TestingSessionLocal()
+    user_id = str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    user = User(id=user_id, username=f"user_{uuid.uuid4().hex[:6]}", email=f"user_{uuid.uuid4().hex[:6]}@example.com", hashed_password="pw")
+    repo = Repository(id=repo_id, user_id=user_id, url=f"https://github.com/test/{repo_id}", owner="test", name=repo_id, default_branch="main", primary_language="python", status="analyzing")
+
+    # Heartbeat was updated recently (within 5 minutes)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    job = AnalysisJob(
+        id=str(uuid.uuid4()),
+        repository_id=repo_id,
+        status="processing",
+        current_stage="embedding",
+        progress_percent=95,
+        message="Generating embeddings...",
+        created_at=now - timedelta(minutes=6),
+        updated_at=now - timedelta(seconds=10),
+    )
+    db.add_all([user, repo, job])
+    db.commit()
+
+    resp = get_analysis_status(repo_id=repo_id, db=db, current_user=user)
+    assert resp.status == "processing"
+    assert resp.is_stalled is False
+    assert resp.progress_percent == 95
+
+    # Database must remain completely untouched
+    db.refresh(job)
+    assert job.status == "processing"
+    db.close()
+
+
+def test_interrupted_job_reports_stalled_advisory_without_db_mutation():
+    from datetime import datetime, timezone, timedelta
+    from app.routes.repository import get_analysis_status
+
+    db = TestingSessionLocal()
+    user_id = str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    user = User(id=user_id, username=f"user_{uuid.uuid4().hex[:6]}", email=f"user_{uuid.uuid4().hex[:6]}@example.com", hashed_password="pw")
+    repo = Repository(id=repo_id, user_id=user_id, url=f"https://github.com/test/{repo_id}", owner="test", name=repo_id, default_branch="main", primary_language="python", status="analyzing")
+
+    # Stalled job: heartbeat stopped 8 minutes ago
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stale_time = now - timedelta(minutes=8)
+    job = AnalysisJob(
+        id=str(uuid.uuid4()),
+        repository_id=repo_id,
+        status="processing",
+        current_stage="embedding",
+        progress_percent=90,
+        message="Generating embeddings and indexing in ChromaDB...",
+        created_at=stale_time,
+        updated_at=stale_time,
+    )
+    db.add_all([user, repo, job])
+    db.commit()
+
+    resp = get_analysis_status(repo_id=repo_id, db=db, current_user=user)
+    # Advisory flag must be True
+    assert resp.is_stalled is True
+    assert "No progress reported" in resp.message
+
+    # Crucial invariant: The database record must remain completely UNMUTATED (read-only polling)
+    db.refresh(job)
+    assert job.status == "processing"
+    db.refresh(repo)
+    assert repo.status == "analyzing"
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_retry_conflict_on_active_job():
+    from unittest.mock import patch
+    from fastapi import HTTPException
+    from app.services.repo_service import create_repository
+
+    db = TestingSessionLocal()
+    user_id = str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    norm_url = f"https://github.com/test/repo-{repo_id[:8]}"
+    user = User(id=user_id, username=f"user_{uuid.uuid4().hex[:6]}", email=f"user_{uuid.uuid4().hex[:6]}@example.com", hashed_password="pw")
+    repo = Repository(id=repo_id, user_id=user_id, url=norm_url, owner="test", name=f"repo-{repo_id[:8]}", default_branch="main", primary_language="python", status="analyzing")
+
+    # Active job in processing
+    job = AnalysisJob(
+        id=str(uuid.uuid4()),
+        repository_id=repo_id,
+        status="processing",
+        current_stage="embedding",
+        progress_percent=90,
+    )
+    db.add_all([user, repo, job])
+    db.commit()
+
+    # Attempting to submit or retry an active repository must raise HTTP 409 Conflict
+    with patch("app.services.repo_service.get_github_repo_metadata", return_value={
+        "owner": "test",
+        "name": f"repo-{repo_id[:8]}",
+        "default_branch": "main",
+        "primary_language": "Python",
+        "description": "Mock active repo"
+    }):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_repository(db, user, norm_url, reanalyze=True)
+
+    assert exc_info.value.status_code == 409
+    assert "already in progress" in str(exc_info.value.detail)
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_preservation_of_completed_analyses():
+    from unittest.mock import patch
+    from app.services.repo_service import create_repository
+
+    db = TestingSessionLocal()
+    user_id = str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    norm_url = f"https://github.com/test/repo-comp-{repo_id[:8]}"
+    user = User(id=user_id, username=f"user_{uuid.uuid4().hex[:6]}", email=f"user_{uuid.uuid4().hex[:6]}@example.com", hashed_password="pw")
+    repo = Repository(
+        id=repo_id,
+        user_id=user_id,
+        url=norm_url,
+        owner="test",
+        name=f"repo-comp-{repo_id[:8]}",
+        default_branch="main",
+        primary_language="python",
+        status="completed",
+        file_count=5,
+        chunk_count=15,
+    )
+    job = AnalysisJob(
+        id=str(uuid.uuid4()),
+        repository_id=repo_id,
+        status="completed",
+        current_stage="completed",
+        progress_percent=100,
+    )
+    db.add_all([user, repo, job])
+    db.commit()
+
+    # Submitting completed repo without reanalyze must reuse it without launching a pipeline
+    with patch("app.services.repo_service.get_github_repo_metadata", return_value={
+        "owner": "test",
+        "name": f"repo-comp-{repo_id[:8]}",
+        "default_branch": "main",
+        "primary_language": "Python",
+        "description": "Mock completed repo"
+    }):
+        r, j, is_already_completed = await create_repository(db, user, norm_url, reanalyze=False)
+
+    assert is_already_completed is True
+    assert r.id == repo_id
+    assert j.id == job.id
+    db.close()
+
+
+def test_embedding_progress_db_commit_failure_recovers_and_completes():
+    from unittest.mock import patch
+    from app.services.ingestion_service import run_ingestion_pipeline, update_job_status
+    from app.ai.vector_store import get_vector_store
+
+    db = TestingSessionLocal()
+    user_id = str(uuid.uuid4())
+    repo_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+
+    user = User(id=user_id, username=f"u_{uuid.uuid4().hex[:6]}", email=f"u_{uuid.uuid4().hex[:6]}@example.com", hashed_password="pw")
+    repo = Repository(
+        id=repo_id,
+        user_id=user_id,
+        url="https://github.com/test-owner/test-progress-recover",
+        owner="test-owner",
+        name="test-progress-recover",
+        default_branch="main",
+        primary_language="Python",
+        status="pending",
+    )
+    job = AnalysisJob(
+        id=job_id,
+        repository_id=repo_id,
+        status="pending",
+        current_stage="pending",
+        progress_percent=0,
+    )
+    db.add_all([user, repo, job])
+    db.commit()
+    db.close()
+
+    orig_update_job_status = update_job_status
+    progress_failures = []
+
+    def mock_update_job_status(s_db, s_job, stage, percent, msg, status="processing"):
+        if "Generating embeddings and indexing in ChromaDB (" in msg:
+            progress_failures.append(True)
+            raise RuntimeError("Simulated DB lock/commit failure during progress callback")
+        return orig_update_job_status(s_db, s_job, stage, percent, msg, status=status)
+
+    with patch("app.services.ingestion_service.validate_github_url", return_value=True), \
+         patch("app.services.ingestion_service.download_or_clone_repository", return_value="dummy_dir"), \
+         patch("app.services.ingestion_service.cleanup_repository_dir", return_value=None), \
+         patch("app.services.ingestion_service.process_repository_files", return_value=(
+             [{
+                 "file_path": "main.py",
+                 "file_name": "main.py",
+                 "language": "python",
+                 "size_bytes": 25,
+                 "line_count": 2,
+                 "sha_hash": "dummy_sha",
+                 "content": "def test_recovery():\n    return 'clean'\n"
+             }],
+             [{
+                 "chunk_id": f"chunk-prog-{uuid.uuid4().hex[:6]}",
+                 "content": "def test_recovery():\n    return 'clean'\n",
+                 "file_path": "main.py",
+                 "language": "python",
+                 "start_line": 1,
+                 "end_line": 2,
+                 "symbol_name": "test_recovery",
+                 "sha_hash": "dummy_chunk_sha",
+             }]
+         )), \
+         patch("app.services.ingestion_service.SessionLocal", side_effect=TestingSessionLocal), \
+         patch("app.services.ingestion_service.update_job_status", side_effect=mock_update_job_status):
+
+        run_ingestion_pipeline(job_id, repo_id)
+
+    assert len(progress_failures) > 0, "Expected at least one progress callback invocation to fail"
+
+    verify_db = TestingSessionLocal()
+    completed_job = verify_db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    completed_repo = verify_db.query(Repository).filter(Repository.id == repo_id).first()
+
+    assert completed_job is not None
+    assert completed_job.status == "completed", f"Expected job status 'completed', got '{completed_job.status}' (details: {completed_job.error_details})"
+    assert completed_job.progress_percent == 100
+    assert completed_repo is not None
+    assert completed_repo.status == "completed"
+    assert completed_repo.chunk_count == 1
+    verify_db.close()
+
+    try:
+        vs = get_vector_store()
+        vs.delete_collection(repo_id)
+    except Exception:
+        pass

@@ -14,6 +14,7 @@ from app.ai.call_chain import ASTCallChainTracer, CallEdge
 from app.ai.rag import RAGEngine, extract_and_validate_citations
 from app.ai.llm import MockLLM
 from app.ai.vector_store import get_vector_store
+from tests.rag_fixtures import ensure_rag_fixtures, deactivate_rag_isolation
 from app.database import SessionLocal
 from app.models.file import RepositoryFile
 
@@ -21,11 +22,16 @@ from app.models.file import RepositoryFile
 class TestRAGCallChainEdgesRegression(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        fixtures = ensure_rag_fixtures()
         cls.vector_store = get_vector_store()
         cls.mock_llm = MockLLM()
         cls.engine = RAGEngine(vector_store=cls.vector_store, llm_provider=cls.mock_llm)
-        cls.vehicle_repo_id = "3f4d8af2-f8d0-4293-ae4e-885a4cbf3221"
-        cls.fastapi_repo_id = "31806550-364e-4715-8904-55414d25691d"
+        cls.vehicle_repo_id = fixtures["vehicle_repo_id"]
+        cls.fastapi_repo_id = fixtures["fastapi_repo_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        deactivate_rag_isolation()
 
     def test_valid_direct_call_edge(self):
         """Task 7.1: Verify a valid direct call edge from AST call site."""

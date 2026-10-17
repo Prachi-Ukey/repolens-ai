@@ -87,14 +87,22 @@ class DummyCollection:
         return results[:top_k]
 
 
+from tests.rag_fixtures import ensure_rag_fixtures, deactivate_rag_isolation
+
+
 class TestRAGSourceRetrieval(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        fixtures = ensure_rag_fixtures()
         cls.real_vector_store = get_vector_store()
         cls.mock_llm = MockLLM()
         cls.real_engine = RAGEngine(vector_store=cls.real_vector_store, llm_provider=cls.mock_llm)
-        cls.fastapi_repo_id = "31806550-364e-4715-8904-55414d25691d"
-        cls.vehicle_repo_id = "3f4d8af2-f8d0-4293-ae4e-885a4cbf3221"
+        cls.fastapi_repo_id = fixtures["fastapi_repo_id"]
+        cls.vehicle_repo_id = fixtures["vehicle_repo_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        deactivate_rag_isolation()
 
     # =========================================================================
     # Test 1: Exact file and method question (fastapi/applications.py and FastAPI.__call__)

@@ -49,3 +49,4 @@ class AnalysisStatusResponse(BaseModel):
     progress_percent: int
     message: Optional[str] = None
     error_details: Optional[str] = None
+    is_stalled: Optional[bool] = False
