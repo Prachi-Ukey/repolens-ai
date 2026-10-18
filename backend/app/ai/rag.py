@@ -511,6 +511,9 @@ def extract_and_validate_citations(
     # Normalize alternative bracket citations and prose citations
     cleaned_answer = re.sub(r"\\([#*_\-\`\[\]])", r"\1", answer)
 
+    # Expand compound bracket citations into individual citation tokens
+    cleaned_answer = normalize_compound_citations(cleaned_answer)
+
     # 1. Bracket citations with comma or space: [file, lines 10-20] or [file, 10-20] -> [file:10-20]
     cleaned_answer = re.sub(
         r"\[([^\[\]:,\s]+)\s*,\s*(?:lines?\s*)?(\d+)\s*[-–—]\s*(\d+)\]",
@@ -5599,10 +5602,94 @@ Rules:
 7. Do not claim a function calls another function unless the caller's code actually contains that call or AST metadata explicitly confirms it.
 8. Every technical claim must have a citation.
 9. Citation format: [file_path:start_line-end_line]. You must use the exact FILE and LINES shown in the evidence (e.g. [app.py:201-250]).
-10. You can include multiple citations if your answer requires evidence from different chunks.
+10. You can include multiple citations if your answer requires evidence from different chunks. Always write each citation in a separate pair of brackets (e.g. [README.md:1-12] [README.md:30-40]), never combined inside a single bracket like [README.md:1-12, README.md:30-40].
 11. Never create a Sources section. Do not list sources at the end. Place citations inline.
 12. Provide a concise but complete answer. For straightforward implementation questions, keep answers very concise. Do not add unrelated functions unless they are necessary to answer the question.
 13. For questions regarding the repository's purpose or problem solved, answer based on the project's documentation, README, and primary application files. Do not describe third-party packages or lockfiles as the repository's main purpose.
 14. For questions asking which functions are called after an event or operation (call chain / workflow), state the sequence of functions executed in the handler following the event, explain what each called function does based on its code definition in the evidence, and cite the exact file and lines for each function. Do not mention unrelated handlers like signup, login, or edit profile.
 """
+
+
+# ============================================================
+# COMPOUND CITATION NORMALIZATION
+# ============================================================
+
+def normalize_compound_citations(answer: str) -> str:
+    """
+    Expand compound bracket citations into individual citation tokens:
+    e.g. [README.md:1-12, README.md:30-40, README.md:75-85] -> [README.md:1-12] [README.md:30-40] [README.md:75-85]
+    e.g. [README.md:1-12; README.md:30-40] -> [README.md:1-12] [README.md:30-40]
+    e.g. [README.md:1-12, 30-40, 75-85] -> [README.md:1-12] [README.md:30-40] [README.md:75-85]
+    """
+    file_cand_re = r"[a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9_]+"
+    lines_part_re = r"(?:lines?\s*)?(\d+)(?:\s*[-–—]\s*(\d+))?"
+
+    def _expand_compound_bracket(m: re.Match) -> str:
+        inner = m.group(1).strip()
+        if ("," not in inner and ";" not in inner) or not re.search(r"\d+", inner):
+            return m.group(0)
+
+        raw_items = [it.strip() for it in re.split(r"[,;]+", inner) if it.strip()]
+        if len(raw_items) <= 1:
+            return m.group(0)
+
+        has_citation_pattern = False
+        for it in raw_items:
+            if re.search(rf"{file_cand_re}\s*[:,\s]\s*{lines_part_re}", it, re.IGNORECASE):
+                has_citation_pattern = True
+                break
+
+        if not has_citation_pattern:
+            return m.group(0)
+
+        expanded = []
+        current_file = None
+
+        for it in raw_items:
+            # 1. Matches "file_path:start-end" or "file_path:start" or "file_path, lines start-end"
+            m_full = re.match(
+                rf"^({file_cand_re})\s*(?:[:,\s]|:\s*lines?\s*|,\s*lines?\s*|\s+lines?\s*)\s*{lines_part_re}$",
+                it,
+                re.IGNORECASE
+            )
+            if m_full:
+                current_file = m_full.group(1).strip()
+                s_l = m_full.group(2)
+                e_l = m_full.group(3)
+                if e_l:
+                    expanded.append(f"[{current_file}:{s_l}-{e_l}]")
+                else:
+                    expanded.append(f"[{current_file}:{s_l}]")
+                continue
+
+            # 2. Matches lines only following an established file: "30-40" or "lines 30-40" or "50"
+            m_lines = re.match(rf"^{lines_part_re}$", it, re.IGNORECASE)
+            if m_lines and current_file:
+                s_l = m_lines.group(1)
+                e_l = m_lines.group(2)
+                if e_l:
+                    expanded.append(f"[{current_file}:{s_l}-{e_l}]")
+                else:
+                    expanded.append(f"[{current_file}:{s_l}]")
+                continue
+
+            # 3. Matches file only: "file.ext"
+            m_file = re.match(rf"^({file_cand_re})$", it)
+            if m_file:
+                current_file = m_file.group(1).strip()
+                expanded.append(f"[{current_file}]")
+                continue
+
+            # 4. Otherwise, retain as individual bracket so downstream validation can process or reject
+            expanded.append(f"[{it}]")
+
+        if expanded:
+            return " " + " ".join(expanded) + " "
+        return m.group(0)
+
+    cleaned = re.sub(r"\[([^\[\]]+)\]", _expand_compound_bracket, answer)
+    cleaned = re.sub(r" +", " ", cleaned)
+    cleaned = re.sub(r" ([\.,;\)])", r"\1", cleaned)
+    cleaned = re.sub(r"(\() ", r"\1", cleaned)
+    return cleaned
 
