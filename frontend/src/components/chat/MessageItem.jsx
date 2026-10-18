@@ -196,9 +196,8 @@ export const MessageItem = ({ message, onSelectCitation }) => {
     }
   }
 
-  const isGrounded = message.grounded !== undefined
-    ? Boolean(message.grounded)
-    : (Array.isArray(sources) && sources.length > 0);
+  const isStreaming = Boolean(message.isStreaming);
+  const isGrounded = Boolean(message.grounded);
 
   // Remove duplicate source ranges
   const uniqueSources = sources.filter((src, index, self) => {
@@ -248,6 +247,11 @@ export const MessageItem = ({ message, onSelectCitation }) => {
             (message.isError || message.error) ? (
               <span className="text-[10px] font-mono text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
                 Service Error
+              </span>
+            ) : isStreaming ? (
+              <span className="text-[10px] font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                Analyzing Evidence...
               </span>
             ) : isGrounded ? (
               <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">

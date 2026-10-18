@@ -95,61 +95,94 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
 
-      let isFirstChunk = true;
       let assistantMsgId = (Date.now() + 1).toString();
+      let streamBuffer = '';
+
+      const processRecord = (recordText) => {
+        const trimmed = recordText.trim();
+        if (!trimmed) return;
+
+        try {
+          const data = JSON.parse(trimmed);
+
+          if (data.type === 'init') {
+            setConversationId(data.conversation_id);
+            setMessages(prev => [
+              ...prev,
+              {
+                id: assistantMsgId,
+                sender: 'assistant',
+                content: '',
+                sources: [],
+                isStreaming: true,
+                grounded: false
+              }
+            ]);
+          } else if (data.type === 'chunk') {
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === assistantMsgId
+                  ? { ...msg, content: msg.content + data.content, isStreaming: true }
+                  : msg
+              )
+            );
+          } else if (data.type === 'error') {
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      content: data.error || data.content || 'An error occurred during streaming.',
+                      isStreaming: false,
+                      isError: true,
+                      error: true,
+                      grounded: false
+                    }
+                  : msg
+              )
+            );
+          } else if (data.type === 'done') {
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      content: data.answer,
+                      sources: Array.isArray(data.sources) ? data.sources : [],
+                      grounded: Boolean(data.grounded),
+                      isStreaming: false,
+                      isError: Boolean(data.error),
+                      error: data.error || false
+                    }
+                  : msg
+              )
+            );
+          }
+        } catch (e) {
+          console.warn(`[ChatStream] Incomplete or unparseable record (length: ${trimmed.length}): ${e.message}`);
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunkText = decoder.decode(value, { stream: true });
-        const lines = chunkText.split('\n').filter(line => line.trim() !== '');
+        streamBuffer += decoder.decode(value, { stream: true });
+        const lines = streamBuffer.split(/\r?\n/);
+        streamBuffer = lines.pop() ?? '';
 
         for (const line of lines) {
-          try {
-            const data = JSON.parse(line);
-
-            if (data.type === 'init') {
-              setConversationId(data.conversation_id);
-              // Add empty assistant message
-              setMessages(prev => [
-                ...prev,
-                {
-                  id: assistantMsgId,
-                  sender: 'assistant',
-                  content: '',
-                  sources: []
-                }
-              ]);
-            } else if (data.type === 'chunk') {
-              setMessages(prev =>
-                prev.map(msg =>
-                  msg.id === assistantMsgId
-                    ? { ...msg, content: msg.content + data.content }
-                    : msg
-                )
-              );
-            } else if (data.type === 'error') {
-              setMessages(prev =>
-                prev.map(msg =>
-                  msg.id === assistantMsgId
-                    ? { ...msg, content: data.error || data.content, isError: true, error: true, grounded: false }
-                    : msg
-                )
-              );
-            } else if (data.type === 'done') {
-              setMessages(prev =>
-                prev.map(msg =>
-                  msg.id === assistantMsgId
-                    ? { ...msg, content: data.answer, sources: data.sources, grounded: data.grounded, isError: data.error, error: data.error }
-                    : msg
-                )
-              );
-            }
-          } catch (e) {
-            console.error("Error parsing stream chunk", e, line);
-          }
+          processRecord(line);
         }
+      }
+
+      // Flush streaming TextDecoder
+      streamBuffer += decoder.decode();
+
+      // Process any valid final record not terminated by a newline
+      if (streamBuffer.trim()) {
+        processRecord(streamBuffer);
+        streamBuffer = '';
       }
 
     } catch (err) {
@@ -159,17 +192,38 @@ export const ChatWindow = ({ repoId, onSelectCitation }) => {
         err
       );
 
-      const errorMsg = {
-        id: (Date.now() + 1).toString(),
-        sender: 'assistant',
-        content:
-          "Sorry, an error occurred while querying the codebase RAG engine. Please check your network connection or API settings."
-      };
-
-      setMessages(prev => [
-        ...prev,
-        errorMsg
-      ]);
+      setMessages(prev => {
+        const exists = prev.some(m => m.id === assistantMsgId);
+        if (exists) {
+          return prev.map(m =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  content:
+                    m.content ||
+                    "Sorry, an error occurred while querying the codebase RAG engine. Please check your network connection or API settings.",
+                  isStreaming: false,
+                  isError: true,
+                  error: true,
+                  grounded: false
+                }
+              : m
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: assistantMsgId,
+            sender: 'assistant',
+            content:
+              "Sorry, an error occurred while querying the codebase RAG engine. Please check your network connection or API settings.",
+            isStreaming: false,
+            isError: true,
+            error: true,
+            grounded: false
+          }
+        ];
+      });
 
     } finally {
       setLoading(false);

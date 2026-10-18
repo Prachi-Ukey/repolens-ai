@@ -219,7 +219,7 @@ def extract_target_references(question: str) -> Dict[str, Any]:
         item = b.strip()
         norm = item.replace("\\", "/")
         if norm not in file_paths and re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", item):
-            if item not in symbols and item.lower() not in QUERY_STOPWORDS:
+            if item not in symbols and item.lower() not in QUERY_STOPWORDS and item.lower() not in QUESTION_AND_ACTION_WORDS and item.lower() not in PROGRAMMING_LANGUAGES:
                 symbols.append(item)
 
     # 2. Dunder methods: __call__, __init__, etc.
@@ -235,40 +235,40 @@ def extract_target_references(question: str) -> Dict[str, Any]:
         re.IGNORECASE
     ):
         s = m.group(1).strip()
-        if s not in symbols and s.lower() not in QUERY_STOPWORDS:
+        if s not in symbols and s.lower() not in QUERY_STOPWORDS and s.lower() not in QUESTION_AND_ACTION_WORDS and s.lower() not in PROGRAMMING_LANGUAGES:
             symbols.append(s)
 
-    # 4. Action verb followed by identifier (e.g. Find the FastAPI)
-    for m in re.finditer(
-        r"\b(?:find|locate|show|explain|get|inspect|check)\s+(?:(?:the|a|an)\s+)?`?([a-zA-Z_][a-zA-Z0-9_]*)`?",
-        question,
-        re.IGNORECASE
-    ):
+    # 4. Action verb followed by identifier (only backticked or with code characteristics)
+    for m in re.finditer(r"\b(?:find|locate|inspect|check)\s+(?:(?:the|a|an)\s+)?`?([a-zA-Z_][a-zA-Z0-9_]*)`?", question, re.IGNORECASE):
         s = m.group(1).strip()
-        if s not in symbols and s.lower() not in QUERY_STOPWORDS:
-            symbols.append(s)
+        if s.lower() not in {"def", "class", "method", "function", "variable", "interface", "type"} and s not in symbols:
+            if s.lower() not in QUERY_STOPWORDS and s.lower() not in QUESTION_AND_ACTION_WORDS and s.lower() not in PROGRAMMING_LANGUAGES:
+                if f"`{s}`" in question or "_" in s or any(c.isupper() for c in s[1:]):
+                    symbols.append(s)
 
     # 5. Role keyword followed by identifier: class X, method Y, function Z, def W
-    for m in re.finditer(
-        r"\b(?:class|method|function|def|explain|find|call|invokes?)\s+`?([a-zA-Z_][a-zA-Z0-9_]*)`?",
-        question,
-        re.IGNORECASE
-    ):
+    for m in re.finditer(r"\b(?:class|method|function|def|interface|type)\s+`?([a-zA-Z_][a-zA-Z0-9_]*)`?", question, re.IGNORECASE):
         k_sym = m.group(1).strip()
-        if k_sym not in symbols and k_sym.lower() not in QUERY_STOPWORDS:
-            symbols.append(k_sym)
+        if k_sym not in symbols and k_sym.lower() not in QUERY_STOPWORDS and k_sym.lower() not in QUESTION_AND_ACTION_WORDS and k_sym.lower() not in PROGRAMMING_LANGUAGES:
+            if k_sym.lower() not in {"class", "method", "function", "def", "interface", "type"}:
+                symbols.append(k_sym)
 
     # 6. Multi-token identifiers with underscores (e.g. calculate_damage_severity)
     for m in re.finditer(r"\b([a-zA-Z_][a-zA-Z0-9]*_[a-zA-Z0-9_]+)\b", question):
         s_sym = m.group(1).strip()
-        if s_sym not in symbols and s_sym not in file_paths and s_sym.lower() not in ("end_to_end", "tech_stack") and s_sym.lower() not in QUERY_STOPWORDS:
-            symbols.append(s_sym)
+        if s_sym not in symbols and s_sym not in file_paths and s_sym.lower() not in ("end_to_end", "tech_stack"):
+            if s_sym.lower() not in QUERY_STOPWORDS and s_sym.lower() not in QUESTION_AND_ACTION_WORDS and s_sym.lower() not in PROGRAMMING_LANGUAGES:
+                symbols.append(s_sym)
 
     # 7. PascalCase identifiers (e.g. FastAPI, APIRouter)
     for m in re.finditer(r"\b([A-Z][a-zA-Z0-9_]+)\b", question):
         s_sym = m.group(1).strip()
-        if s_sym not in symbols and s_sym not in file_paths and s_sym.lower() not in QUERY_STOPWORDS:
-            symbols.append(s_sym)
+        if s_sym not in symbols and s_sym not in file_paths:
+            if s_sym.lower() not in QUERY_STOPWORDS and s_sym.lower() not in QUESTION_AND_ACTION_WORDS and s_sym.lower() not in PROGRAMMING_LANGUAGES:
+                has_upper = any(c.isupper() for c in s_sym[1:])
+                is_start = (m.start() == 0 or question[max(0, m.start() - 2):m.start()].strip() in {".", "?", "!"})
+                if has_upper or "_" in s_sym or (not is_start and len(s_sym) > 1 and not s_sym.isupper()):
+                    symbols.append(s_sym)
 
     repo_name_matches = set(
         m.group(1).lower()
@@ -2683,9 +2683,9 @@ class RAGEngine:
                         has_genuinely_explicit_symbol = True
                         break
 
-                if is_conceptual_or_arch and not has_genuinely_explicit_symbol:
+                if not has_genuinely_explicit_symbol:
                     logger.info(
-                        "[RAG Diagnostics] Conceptual/architectural question with unresolvable symbol(s) %s; continuing to normal vector retrieval",
+                        "[RAG Diagnostics] Question with unresolvable symbol(s) %s has no genuinely explicit symbols; continuing to normal vector retrieval",
                         target_symbols
                     )
                     target_symbols = []
@@ -5692,4 +5692,24 @@ def normalize_compound_citations(answer: str) -> str:
     cleaned = re.sub(r" ([\.,;\)])", r"\1", cleaned)
     cleaned = re.sub(r"(\() ", r"\1", cleaned)
     return cleaned
+
+
+# ============================================================
+# PROGRAMMING LANGUAGES & QUESTION WORDS FILTERING
+# ============================================================
+
+PROGRAMMING_LANGUAGES = {
+    "python", "javascript", "typescript", "java", "c", "cpp", "cplusplus", "csharp",
+    "rust", "go", "golang", "ruby", "php", "swift", "kotlin", "scala", "r", "dart",
+    "elixir", "clojure", "haskell", "perl", "lua", "julia", "html", "css", "scss",
+    "sass", "less", "sql", "bash", "shell", "powershell", "sh", "zsh", "dockerfile",
+    "markdown", "json", "yaml", "yml", "xml", "toml", "graphql"
+}
+
+QUESTION_AND_ACTION_WORDS = {
+    "list", "lists", "which", "what", "how", "where", "when", "why", "who", "whom", "whose",
+    "explain", "describe", "show", "give", "tell", "find", "check", "inspect", "locate",
+    "can", "could", "should", "would", "does", "do", "did", "is", "are", "was", "were",
+    "summarize", "outline", "detail", "details", "overview", "using", "use", "uses"
+}
 
