@@ -45,8 +45,6 @@ Understanding an unfamiliar codebase can be time-consuming, especially when it c
 | ❤️ Health Check | [Check Backend Status](https://repolens-backend-7ui1.onrender.com/health) |
 | 💻 GitHub Repository | [View Source Code](https://github.com/Prachi-Ukey/repolens-ai) |
 
-> **Note:** The backend runs on Render's free tier and may need time to wake up after inactivity. Repository indexes and analysis data can also be lost when an ephemeral instance restarts.
-
 ## 📸 Application Screenshots
 
 ### Dashboard
@@ -322,27 +320,6 @@ npm run build
 
 Run only the tests relevant to a change while debugging, then run the complete suite before merging or deploying.
 
-## 🚀 Deployment
-
-RepoLens AI is configured for a split deployment:
-
-| Component | Platform | Resource |
-|---|---|---|
-| Frontend | Vercel | [Live application](https://repolens-ai-kappa.vercel.app/) |
-| Backend | Render | [Live API](https://repolens-backend-7ui1.onrender.com/) |
-| API documentation | Render | [Swagger UI](https://repolens-backend-7ui1.onrender.com/docs) |
-| Source code | GitHub | [Repository](https://github.com/Prachi-Ukey/repolens-ai) |
-
-### Free-tier considerations
-
-- **Cold starts:** The backend may sleep after a period of inactivity and take time to respond to the first request.
-- **Ephemeral storage:** Data stored on a temporary Render filesystem can disappear when the instance restarts or is replaced.
-- **Memory limits:** Local embedding models and vector indexing can consume significant RAM. Large repositories may exceed free-instance resources.
-- **Persistent data:** Production deployments requiring durable repository indexes should use persistent storage and an appropriate database configuration.
-- **API quotas:** Cloud LLM and embedding providers may enforce rate limits or usage quotas.
-
-For additional deployment instructions, see [`DEPLOYMENT_CHECKLIST.md`](DEPLOYMENT_CHECKLIST.md) if the file exists in the repository.
-
 ## 💬 Example Questions
 
 Ask RepoLens AI questions such as:
@@ -350,23 +327,12 @@ Ask RepoLens AI questions such as:
 - What is the main purpose of this repository?
 - Explain the project architecture and folder structure.
 - Which Python files contain the main application logic?
-- What is the purpose of `backend/app/ai/rag.py`?
 - Explain the execution flow of `RAGEngine`.
 - Where is authentication implemented?
-- Which API endpoints handle repository analysis?
 - How does the frontend communicate with the backend?
 - Explain a function using its actual source code and line references.
 
 The quality of the answer depends on repository indexing, the retrieved context, the configured model, and the evidence available.
-
-## ⚠️ Known Limitations
-
-- **Python-focused AST parsing:** Deep structural parsing is optimized for Python. Other languages may rely on less detailed text or symbol-based chunking.
-- **Dynamic behavior:** Runtime-generated code, reflection, and dynamically resolved dependencies may not be fully understood through static analysis.
-- **Retrieval quality:** Relevant code can be missed when indexing is incomplete or search ranking does not select the necessary chunks.
-- **Evidence quality:** A citation is useful only when its referenced source actually supports the associated claim.
-- **Free-tier hosting:** Temporary storage, cold starts, resource limits, and provider quotas can affect availability and analysis size.
-- **Local inference:** Ollama response speed depends on available CPU, memory, and GPU resources.
 
 ## 🗺️ Future Enhancements
 
@@ -379,26 +345,3 @@ Potential improvements include:
 - Richer repository dependency graphs and architecture visualizations.
 - Improved streaming and historical evidence-state handling.
 
-## 🤝 Contributing
-
-Contributions, bug reports, and suggestions are welcome.
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Implement and test your changes.
-4. Open a pull request describing the changes.
-
-For bugs, include reproducible steps, relevant error messages, and expected behavior. Never include secrets or access tokens in an issue.
-
-## 📄 License
-
-Add or link the license that is actually present in the repository. If the project uses the MIT License, include the corresponding `LICENSE` file before labeling the project as MIT-licensed.
-
----
-
-<p align="center">
-  <strong>Built to make unfamiliar codebases easier to understand.</strong>
-  <br />
-  <a href="https://repolens-ai-kappa.vercel.app/">Try RepoLens AI</a> ·
-  <a href="https://github.com/Prachi-Ukey/repolens-ai">Explore the code</a>
-</p>
